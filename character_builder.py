@@ -395,7 +395,7 @@ def summarize_build(talent_names_list, physique_name, golden_finger_name):
 
 
 def build_player(template, talent_names_list=None, physique_name=None, golden_finger_name=None,
-                 descriptions=None, tiers=None, drawbacks=None):
+                 descriptions=None, tiers=None, drawbacks=None, player_name=None):
     """把主角构建选择合并进世界观模板，返回新模板（原模板不被修改）。
 
     - talent_names_list: 自选天赋名列表（0~MAX_TALENTS 个），覆盖模板自带的天赋。
@@ -404,6 +404,7 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     - descriptions: {名字: 描述}，用于给自定义项补一句说明；预设项自动用目录里的描述。
     - tiers: {名字: 等级}，等级会写入条目并影响判定强度。
     - drawbacks: {名字: 负面效果/代价}，会写入条目并注入系统提示。
+    - player_name: 主角姓名/称呼，写入 player.name（避免开局反复问姓名）。
     """
     descs = descriptions or {}
     tier_map = tiers or {}
@@ -413,6 +414,8 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     if not isinstance(p, dict):
         p = {}
         t["player"] = p
+    if player_name and str(player_name).strip():
+        p["name"] = str(player_name).strip()
 
     # 自选天赋（覆盖模板自带天赋）
     talents = []

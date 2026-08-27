@@ -222,6 +222,8 @@ def build_character(template):
     print("—— 构建主角 ——（可自选编号 / 输入 r 随机摇 / 直接输入自定义名）")
     print("=" * 60)
 
+    player_name = input("\n【姓名】你的姓名/称呼（直接回车=用「你」代替）：").strip()
+
     while True:
         talent_sel = _pick_multi(
             "\n【自选天赋】最多 %d 个：" % character_builder.MAX_TALENTS,
@@ -246,7 +248,8 @@ def build_character(template):
 
         c = input("\n采用这个构建？[Y=采用 / r=重新摇一遍 / n=返回世界观]：").strip().lower()
         if c in ("", "y", "yes", "是"):
-            return character_builder.build_player(template, talent_names_list, physique_name, golden_finger_name)
+            return character_builder.build_player(template, talent_names_list, physique_name, golden_finger_name,
+                                                  player_name=player_name)
         if c in ("r", "regen", "重新", "重新摇"):
             continue
         return None

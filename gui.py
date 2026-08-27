@@ -499,6 +499,9 @@ class CharacterDialog(tk.Toplevel):
         tk.Label(self, text="世界观：" + ctx, bg=BG, fg=MUTED, font=FONT_SMALL, anchor="w").pack(
             fill="x", padx=18, pady=(0, 8))
 
+        # 主角姓名
+        self.player_name = self._custom_row("你的姓名 / 称呼（可留空，用「你」代替）")
+
         # —— 天赋（多选，0~3 个）——
         tk.Label(self, text="自选天赋（可多选，最多 3 个）", bg=BG, fg=TEXT, font=FONT_LABEL, anchor="w").pack(
             fill="x", padx=18, pady=(4, 2))
@@ -632,7 +635,9 @@ class CharacterDialog(tk.Toplevel):
             return
         physique = self._selected_physique()
         gf = self._selected_gf()
-        self.result_template = character_builder.build_player(self.template, talents, physique, gf)
+        player_name = (self.player_name.get() or "").strip()
+        self.result_template = character_builder.build_player(
+            self.template, talents, physique, gf, player_name=player_name)
         self.confirmed = True
         self.destroy()
 

@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.13"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.14"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -643,6 +643,9 @@ def render_character_build():
         ctx += " · " + w["background"]
     st.caption("世界观：" + ctx)
 
+    # 主角姓名（开局后不再反复问姓名）
+    player_name = st.text_input("你的姓名 / 称呼", key="player_name", placeholder="可留空，将用「你」代替")
+
     if st.button("♻️ 重新生成候选池"):
         st.session_state.character_pool = None
         for k in ("talent_hand", "physique_hand", "gf_hand", "talent_lock", "physique_lock", "gf_lock",
@@ -690,6 +693,8 @@ def render_character_build():
     st.divider()
     st.markdown("**你的选择**")
     st.info(character_builder.summarize_build(talents, physique, gf_list))
+    if player_name.strip():
+        st.caption("姓名：" + player_name.strip())
     st.caption("等级颜色：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩；高等级带 ⚠代价；自定义项无固定等级，由主持人按名字发挥。")
 
     c1, c2, _ = st.columns([1, 1, 2])
@@ -697,7 +702,8 @@ def render_character_build():
         if st.button("确认开始", type="primary", use_container_width=True):
             start_game(character_builder.build_player(
                 template, talents, physique, gf_list,
-                descriptions=desc_map, tiers=tier_map, drawbacks=drawback_map))
+                descriptions=desc_map, tiers=tier_map, drawbacks=drawback_map,
+                player_name=player_name))
     with c2:
         if st.button("返回世界观", use_container_width=True):
             st.session_state.character_step = False
