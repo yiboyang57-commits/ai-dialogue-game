@@ -10,6 +10,7 @@
 build_player() 把选择合并进世界观模板，返回新模板（不修改原模板）。
 """
 import copy
+import random
 
 
 # ---------------------------------------------------------------- 天赋
@@ -98,6 +99,36 @@ def golden_finger_labels():
     return [g["name"] or "无" for g in GOLDEN_FINGERS]
 
 
+def golden_finger_name_from_label(label):
+    """把「无」这类展示标签还原成名字（None 表示不带）。"""
+    if not label or label == "无":
+        return None
+    return label
+
+
+# ---------------------------------------------------------------- 随机 roll
+
+def roll_talents():
+    """随机 1~MAX_TALENTS 个天赋名。"""
+    n = random.randint(1, MAX_TALENTS)
+    return random.sample(talent_names(), n)
+
+
+def roll_physique():
+    """随机一个体质名。"""
+    return random.choice(physique_names())
+
+
+def roll_golden_finger():
+    """随机一个金手指名（可能为 None = 无）。"""
+    return random.choice([g["name"] for g in GOLDEN_FINGERS])
+
+
+def roll_build():
+    """随机一整套构建，返回 (天赋列表, 体质名, 金手指名)。"""
+    return roll_talents(), roll_physique(), roll_golden_finger()
+
+
 def summarize_build(talent_names_list, physique_name, golden_finger_name):
     """把主角构建结果渲染成一段可读摘要。"""
     lines = [
@@ -108,13 +139,16 @@ def summarize_build(talent_names_list, physique_name, golden_finger_name):
     return "\n".join(lines)
 
 
-def build_player(template, talent_names_list=None, physique_name=None, golden_finger_name=None):
+def build_player(template, talent_names_list=None, physique_name=None, golden_finger_name=None,
+                 descriptions=None):
     """把主角构建选择合并进世界观模板，返回新模板（原模板不被修改）。
 
     - talent_names_list: 自选天赋名列表（0~MAX_TALENTS 个），覆盖模板自带的天赋。
-    - physique_name: 体质名（对应 PHYSIQUES）。
-    - golden_finger_name: 金手指名（对应 GOLDEN_FINGERS；None 表示不带）。
+    - physique_name: 体质名（对应 PHYSIQUES，或自定义名字）。
+    - golden_finger_name: 金手指名（对应 GOLDEN_FINGERS；None/「无」表示不带，或自定义名字）。
+    - descriptions: {名字: 描述}，用于给自定义项补一句说明；预设项自动用目录里的描述。
     """
+    descs = descriptions or {}
     t = copy.deepcopy(template)
     p = t.setdefault("player", {})
     if not isinstance(p, dict):
@@ -125,35 +159,40 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     talents = []
     for name in (talent_names_list or []):
         entry = _find(TALENTS, name)
-        talents.append({"name": name, "description": (entry or {}).get("description", "")})
+        desc = entry["description"] if entry else descs.get(name, "")
+        talents.append({"name": name, "description": desc})
     p["talents"] = talents
 
     # 体质
     p.pop("physique", None)
     physique = _find(PHYSIQUES, physique_name)
-    if physique:
-        p["physique"] = {"name": physique["name"], "description": physique["description"]}
-        attrs = p.get("attributes")
-        if not isinstance(attrs, dict):
-            attrs = {}
-            p["attributes"] = attrs
-        for k, v in (physique.get("attributes") or {}).items():
-            attrs[k] = v
-        if "max_hp" in (physique.get("attributes") or {}):
-            attrs["hp"] = attrs["max_hp"]  # 新角色开局满血
-        delta = physique.get("player_power_delta")
-        if isinstance(delta, (int, float)):
-            c = t.get("combat")
-            if not isinstance(c, dict):
-                c = {}
-                t["combat"] = c
-            base = c.get("player_power", 10) if isinstance(c.get("player_power"), (int, float)) else 10
-            c["player_power"] = base + delta
+    if physique_name:
+        pdesc = physique["description"] if physique else descs.get(physique_name, "")
+        p["physique"] = {"name": physique_name, "description": pdesc}
+        if physique:
+            # 预设体质才应用属性/战力加成
+            attrs = p.get("attributes")
+            if not isinstance(attrs, dict):
+                attrs = {}
+                p["attributes"] = attrs
+            for k, v in (physique.get("attributes") or {}).items():
+                attrs[k] = v
+            if "max_hp" in (physique.get("attributes") or {}):
+                attrs["hp"] = attrs["max_hp"]  # 新角色开局满血
+            delta = physique.get("player_power_delta")
+            if isinstance(delta, (int, float)):
+                c = t.get("combat")
+                if not isinstance(c, dict):
+                    c = {}
+                    t["combat"] = c
+                base = c.get("player_power", 10) if isinstance(c.get("player_power"), (int, float)) else 10
+                c["player_power"] = base + delta
 
     # 金手指
     p.pop("golden_finger", None)
-    gf = _find(GOLDEN_FINGERS, golden_finger_name)
-    if gf and gf.get("name"):
-        p["golden_finger"] = {"name": gf["name"], "description": gf["description"]}
+    if golden_finger_name and golden_finger_name != "无":
+        gf = _find(GOLDEN_FINGERS, golden_finger_name)
+        gdesc = gf["description"] if gf else descs.get(golden_finger_name, "")
+        p["golden_finger"] = {"name": golden_finger_name, "description": gdesc}
 
     return t

@@ -315,6 +315,37 @@ def normalize_template(data):
     return template
 
 
+# ---------------------------------------------------------------- 开场加载语
+
+# 按世界观关键词匹配的“开场构思中”提示语（放在 game.start() 前的等待文案）
+_GENRE_LOADING = [
+    (("修仙", "仙侠", "玄幻", "修真", "灵气", "境界", "飞升", "修炼", "金丹", "元婴", "道", "仙"), "天道演变中…"),
+    (("末世", "丧尸", "废土", "末日", "灾变", "求生"), "末日钟声敲响中…"),
+    (("赛博", "科幻", "星际", "宇宙", "机甲", "未来", "太空", "人工智能"), "星轨校准中…"),
+    (("蒸汽", "机械", "齿轮", "工业", "锅炉"), "齿轮转动中…"),
+    (("悬疑", "侦探", "推理", "恐怖", "惊悚", "迷雾", "失踪", "灵异"), "迷雾渐浓中…"),
+    (("王朝", "宫廷", "古风", "古代", "江湖", "武侠", "皇帝", "太子", "朝堂", "江湖"), "王朝更迭中…"),
+    (("都市", "现代", "职场", "校园", "商战", "都市传说"), "霓虹渐起中…"),
+    (("魔法", "奇幻", "西幻", "龙", "精灵", "巫师", "中世纪", "炼金"), "星辉流转中…"),
+]
+
+
+def world_loading_phrase(template):
+    """根据世界观背景/规则/战力量纲，返回一句贴合题材的“构思中”文案。"""
+    w = template.get("world") if isinstance(template, dict) else None
+    w = w if isinstance(w, dict) else {}
+    combat = template.get("combat") if isinstance(template, dict) else None
+    combat = combat if isinstance(combat, dict) else {}
+    text = " ".join(filter(None, [
+        w.get("name", ""), w.get("background", ""), w.get("rules", ""),
+        w.get("style", ""), combat.get("field", ""),
+    ]))
+    for keywords, phrase in _GENRE_LOADING:
+        if any(k in text for k in keywords):
+            return phrase
+    return "世界徐徐展开中…"
+
+
 # ---------------------------------------------------------------- 预览
 
 def render_preview(t):

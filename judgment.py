@@ -122,11 +122,54 @@ def _sigmoid(z):
         return 0.0 if z < 0 else 1.0
 
 
+# ---- 自定义项（玩家自己起的名字）→ 按关键词推断合理系数 ----
+# 命中规则逐条累加，每个类别设上限 _MAX_CAT，避免叠加过猛；完全命中不到关键词时给一点温和的全局加成。
+CUSTOM_MODIFIER_KEYWORDS = [
+    (("剑", "刀", "枪", "拳", "武", "战", "斗", "兵", "体术", "神力", "肉身", "力拔"), {"combat": 1.0}),
+    (("神体", "圣体", "霸体", "武体", "战体", "仙体", "魔体", "妖体", "龙体", "王体", "道体", "宝体", "玄体", "帝体", "皇体", "混沌体"), {"combat": 0.8, "global": 0.3}),
+    (("血脉", "神血", "圣血", "真龙", "龙凤", "凤凰", "麒麟", "混沌", "先天", "无上", "至强"), {"global": 0.4, "combat": 0.3}),
+    (("神", "圣", "仙", "魔", "妖", "龙", "凤", "佛", "修罗"), {"global": 0.3, "combat": 0.3}),
+    (("帝", "皇", "王", "尊", "主宰", "无敌"), {"global": 0.4, "combat": 0.4}),
+    (("玄", "妙", "秘", "隐"), {"global": 0.3, "insight": 0.3}),
+    (("九转", "转世", "轮回", "涅槃", "重生", "不朽", "不灭"), {"global": 0.5}),
+    (("遁", "逃", "身法", "轻功", "敏捷", "闪", "疾", "迅", "影", "无踪"), {"sneak": 1.0, "flee": 0.6}),
+    (("运", "气运", "福", "天命", "吉", "祥", "机缘", "鸿运"), {"global": 0.5, "treasure": 0.8}),
+    (("财", "富", "金", "点石", "生财", "商", "聚宝"), {"treasure": 0.8, "craft": 0.3}),
+    (("魅", "艳", "情", "缘", "吸引", "魅力", "倾国", "祸水"), {"relationship": 1.0, "persuasion": 0.6}),
+    (("口才", "舌", "辩", "说", "话术", "谈判", "巧言", "伶牙"), {"persuasion": 1.2}),
+    (("智", "谋", "算", "计", "洞察", "慧", "通明", "慧眼", "推演", "预知", "明察"), {"insight": 1.2}),
+    (("炼", "锻造", "铸造", "炼丹", "炼器", "制药", "工匠", "巧手", "神匠"), {"craft": 1.2}),
+    (("毒", "医", "药", "蛊", "抗", "不侵", "百毒", "万毒"), {"action": 0.4, "craft": 0.5}),
+    (("学", "悟", "资质", "天赋", "道", "根骨", "灵根", "慧根", "悟性"), {"global": 0.3, "insight": 0.4}),
+    (("力", "强", "壮", "刚", "猛", "霸"), {"combat": 0.5}),
+]
+
+_MAX_CAT = 1.5  # 每个判定类别的推断加成上限
+
+
+def infer_modifier(name):
+    """根据自定义项名字里的关键词，推断合理的判定系数（dict）。"""
+    name = str(name or "")
+    mods = {}
+    for keywords, m in CUSTOM_MODIFIER_KEYWORDS:
+        if any(k in name for k in keywords):
+            for cat, v in m.items():
+                mods[cat] = min(_MAX_CAT, mods.get(cat, 0.0) + v)
+    if not mods:
+        mods["global"] = 0.4  # 兜底：至少给一点全局加成
+    return mods
+
+
 def talent_bonus(category, talents):
-    """累加天赋对某类判定（category）的 logit 系数。talents 为天赋名列表。"""
+    """累加天赋对某类判定（category）的 logit 系数。talents 为天赋/体质/金手指名列表。
+
+    预设项用 TALENT_MODIFIERS 的精确系数；自定义项按名字关键词推断系数。
+    """
     total = 0.0
     for t in (talents or []):
-        m = TALENT_MODIFIERS.get(t) or {}
+        m = TALENT_MODIFIERS.get(t)
+        if m is None:
+            m = infer_modifier(t)
         total += m.get("global", 0.0) + m.get(category, 0.0)
     return total
 

@@ -170,79 +170,85 @@ def manual_template():
 
 # ---------------------------------------------------------------- 主角构建
 
-def _pick_multi(prompt, options, max_n=None, min_n=0):
-    """命令行多选：返回选中的项名列表（按序号，逗号分隔）。"""
+ROLL = "__ROLL__"  # 命令行「随机摇一摇」哨兵
+
+
+def _pick_multi(prompt, options, max_n=None):
+    """命令行多选：返回项名列表；支持 数字/自定义名/逗号分隔，r=随机。"""
     print(prompt)
     for i, o in enumerate(options, 1):
         print(f"  {i}) {o}")
-    raw = input("编号（逗号分隔，直接回车=跳过）：").strip()
+    raw = input("编号（逗号分隔）/ 自定义名（逗号分隔）/ r=随机，回车=跳过：").strip()
     if not raw:
         return []
+    if raw.lower() in ("r", "随机", "roll"):
+        return [ROLL]
     out = []
     for part in raw.replace("，", ",").split(","):
         part = part.strip()
         if not part:
             continue
-        try:
+        if part.isdigit():
             idx = int(part) - 1
-        except ValueError:
-            continue
-        if 0 <= idx < len(options):
-            out.append(options[idx])
+            if 0 <= idx < len(options):
+                out.append(options[idx])
+        else:
+            out.append(part)  # 自定义名
     if max_n is not None and len(out) > max_n:
         print(f"最多选 {max_n} 个，已只取前 {max_n} 个。")
         out = out[:max_n]
-    if len(out) < min_n:
-        out = []
     return out
 
 
 def _pick_single(prompt, options, default_idx=0):
-    """命令行单选：返回选中的项名。"""
+    """命令行单选：返回项名；支持 数字/自定义名/r=随机。"""
     print(prompt)
     for i, o in enumerate(options, 1):
         print(f"  {i}) {o}")
-    raw = input(f"编号（默认 {default_idx + 1}）：").strip()
+    raw = input(f"编号 / 自定义名 / r=随机（默认 {default_idx + 1}）：").strip()
     if not raw:
         return options[default_idx]
-    try:
+    if raw.lower() in ("r", "随机", "roll"):
+        return ROLL
+    if raw.isdigit():
         idx = int(raw) - 1
-    except ValueError:
-        idx = default_idx
-    if not (0 <= idx < len(options)):
-        idx = default_idx
-    return options[idx]
+        return options[idx] if 0 <= idx < len(options) else options[default_idx]
+    return raw  # 自定义名
 
 
 def build_character(template):
-    """开始新游戏前构建主角：自选天赋 / 体质 / 金手指，返回合并后的模板。"""
+    """开始新游戏前构建主角：自选 / 随机 / 自定义 天赋·体质·金手指。"""
     print("\n" + "=" * 60)
-    print("—— 构建主角 ——")
+    print("—— 构建主角 ——（可自选编号 / 输入 r 随机摇 / 直接输入自定义名）")
     print("=" * 60)
 
-    talent_names_list = _pick_multi(
-        "\n【自选天赋】可多选，最多 %d 个（序号用逗号分隔，如 1,3,5）：" % character_builder.MAX_TALENTS,
-        character_builder.talent_names(),
-        max_n=character_builder.MAX_TALENTS,
-    )
-
-    physique_name = _pick_single("\n【体质】选择一项（默认 1）：", character_builder.physique_names(), default_idx=0)
-
-    gf_labels = character_builder.golden_finger_labels()
-    gf_label = _pick_single("\n【金手指】是否自带外挂（默认 1=无）：", gf_labels, default_idx=0)
-    golden_finger_name = None if gf_label == "无" else gf_label
-
-    print("\n" + "-" * 60)
-    print("你的主角构建：")
-    print(character_builder.summarize_build(talent_names_list, physique_name, golden_finger_name))
-    print("-" * 60)
-
     while True:
-        c = input("\n采用这个构建？[Y=采用 / r=重新构建 / n=返回世界观]：").strip().lower()
+        talent_sel = _pick_multi(
+            "\n【自选天赋】最多 %d 个：" % character_builder.MAX_TALENTS,
+            character_builder.talent_names(),
+            max_n=character_builder.MAX_TALENTS,
+        )
+        talent_names_list = character_builder.roll_talents() if talent_sel == [ROLL] else talent_sel
+
+        phys_sel = _pick_single("\n【体质】：", character_builder.physique_names(), default_idx=0)
+        physique_name = character_builder.roll_physique() if phys_sel == ROLL else phys_sel
+
+        gf_sel = _pick_single("\n【金手指】：", character_builder.golden_finger_labels(), default_idx=0)
+        if gf_sel == ROLL:
+            golden_finger_name = character_builder.roll_golden_finger()
+        else:
+            golden_finger_name = None if gf_sel in ("无", "") else gf_sel
+
+        print("\n" + "-" * 60)
+        print("你的主角构建：")
+        print(character_builder.summarize_build(talent_names_list, physique_name, golden_finger_name))
+        print("-" * 60)
+
+        c = input("\n采用这个构建？[Y=采用 / r=重新摇一遍 / n=返回世界观]：").strip().lower()
         if c in ("", "y", "yes", "是"):
             return character_builder.build_player(template, talent_names_list, physique_name, golden_finger_name)
-        if c in ("r", "regen", "重新构建"):
-            return build_character(template)
+        if c in ("r", "regen", "重新", "重新摇"):
+            continue
         return None
 
 
@@ -265,7 +271,7 @@ def start_new_game(llm):
     memory = Memory()
     game = Game(state, memory, llm)
 
-    print("\n（主持人思考中…）")
+    print("\n（" + world_gen.world_loading_phrase(template) + "）")
     try:
         opening = game.start()
     except LLMError as e:

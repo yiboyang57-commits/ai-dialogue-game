@@ -466,7 +466,7 @@ class SetupDialog(tk.Toplevel):
 
 
 class CharacterDialog(tk.Toplevel):
-    """新游戏主角构建对话框：自选天赋 / 体质 / 金手指，返回构建后的模板。"""
+    """新游戏主角构建对话框：自选 / 随机 / 自定义 天赋 · 体质 · 金手指。"""
 
     def __init__(self, master, template):
         super().__init__(master)
@@ -486,8 +486,10 @@ class CharacterDialog(tk.Toplevel):
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=18, pady=(16, 8))
         tk.Label(head, text="构建主角", bg=BG, fg=TEXT, font=(FONT[0], 16, "bold")).pack(side="left")
-        tk.Label(head, text="自选天赋、体质与金手指，然后进入故事", bg=BG, fg=MUTED, font=FONT_SMALL).pack(
+        tk.Label(head, text="可自选、随机，或直接输入自定义", bg=BG, fg=MUTED, font=FONT_SMALL).pack(
             side="left", padx=(10, 0), pady=(4, 0))
+        RoundedButton(head, "🎲 随机", command=self._on_roll, fill=CARD_2, hover_fill=CARD_3,
+                      font=FONT_SMALL, padx=14, height=30).pack(side="right")
 
         # 世界观上下文提示
         w = self.template.get("world") or {}
@@ -513,6 +515,7 @@ class CharacterDialog(tk.Toplevel):
                 row=i // 3, column=i % 3, sticky="w", padx=2, pady=2)
         for col in range(3):
             talent_frame.columnconfigure(col, weight=1)
+        self.custom_talent = self._custom_row("自定义天赋（顿号/逗号分隔多个）")
 
         # —— 体质（单选）——
         tk.Label(self, text="体质（单选）", bg=BG, fg=TEXT, font=FONT_LABEL, anchor="w").pack(
@@ -527,6 +530,7 @@ class CharacterDialog(tk.Toplevel):
                 row=i // 3, column=i % 3, sticky="w", padx=2, pady=2)
         for col in range(3):
             physique_frame.columnconfigure(col, weight=1)
+        self.custom_physique = self._custom_row("或自定义体质名")
 
         # —— 金手指（单选）——
         tk.Label(self, text="金手指（单选）", bg=BG, fg=TEXT, font=FONT_LABEL, anchor="w").pack(
@@ -542,11 +546,12 @@ class CharacterDialog(tk.Toplevel):
                 row=i // 3, column=i % 3, sticky="w", padx=2, pady=2)
         for col in range(3):
             gf_frame.columnconfigure(col, weight=1)
+        self.custom_gf = self._custom_row("或自定义金手指名")
 
         # —— 预览 ——
         tk.Label(self, text="你的选择", bg=BG, fg=MUTED, font=FONT_SMALL, anchor="w").pack(
             fill="x", padx=18, pady=(10, 2))
-        preview_card = Card(self, height=88)
+        preview_card = Card(self, height=80)
         preview_card.pack(fill="x", padx=18, pady=4)
         self.preview = tk.Text(preview_card.inner, wrap="word", bg=CARD, fg=TEXT, relief="flat",
                                borderwidth=0, highlightthickness=0, padx=10, pady=8, font=FONT_SMALL,
@@ -564,20 +569,57 @@ class CharacterDialog(tk.Toplevel):
 
         self._refresh_preview()
 
+    def _custom_row(self, label):
+        """一行「自定义」输入框，返回其 StringVar。"""
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=18, pady=(4, 0))
+        tk.Label(row, text=label, bg=BG, fg=MUTED, font=FONT_SMALL, anchor="w").pack(side="left")
+        var = tk.StringVar()
+        ttk.Entry(row, textvariable=var, width=36).pack(side="left", padx=(8, 0), fill="x", expand=True)
+        var.trace_add("write", lambda *a: self._refresh_preview())
+        return var
+
+    @staticmethod
+    def _parse_custom(text):
+        names = [s.strip() for s in (text or "").replace("，", ",").replace("、", ",").split(",")]
+        return [n for n in names if n]
+
     def _selected_talents(self):
-        return [name for name, var in self.talent_vars.items() if var.get()]
+        out = [name for name, var in self.talent_vars.items() if var.get()]
+        for n in self._parse_custom(self.custom_talent.get()):
+            if n not in out:
+                out.append(n)
+        return out[:character_builder.MAX_TALENTS]
+
+    def _selected_physique(self):
+        return (self.custom_physique.get() or "").strip() or self.physique_var.get()
+
+    def _selected_gf(self):
+        label = (self.custom_gf.get() or "").strip() or self.gf_var.get()
+        return None if label in ("无", "") else label
+
+    def _on_roll(self):
+        t, p, g = character_builder.roll_build()
+        for name, var in self.talent_vars.items():
+            var.set(1 if name in t else 0)
+        self.physique_var.set(p)
+        self.gf_var.set(g or "无")
+        self.custom_talent.set("")
+        self.custom_physique.set("")
+        self.custom_gf.set("")
+        self._refresh_preview()
 
     def _refresh_preview(self):
         talents = self._selected_talents()
         lines = []
         if talents:
-            lines.append("天赋：" + "、".join(f"{n}（{self.talent_desc.get(n, '')}）" for n in talents))
+            lines.append("天赋：" + "、".join(f"{n}（{self.talent_desc.get(n, '自定义')}）" for n in talents))
         else:
             lines.append("天赋：无")
-        pname = self.physique_var.get()
-        lines.append("体质：" + f"{pname}（{self.physique_desc.get(pname, '')}）")
-        gname = self.gf_var.get()
-        lines.append("金手指：" + f"{gname}（{self.gf_desc.get(gname, '')}）")
+        pname = self._selected_physique()
+        lines.append("体质：" + f"{pname}（{self.physique_desc.get(pname, '自定义')}）")
+        gname = self._selected_gf() or "无"
+        lines.append("金手指：" + f"{gname}（{self.gf_desc.get(gname, '自定义')}）")
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", "\n".join(lines))
@@ -588,9 +630,8 @@ class CharacterDialog(tk.Toplevel):
         if len(talents) > character_builder.MAX_TALENTS:
             messagebox.showwarning("提示", f"天赋最多选 {character_builder.MAX_TALENTS} 个。")
             return
-        physique = self.physique_var.get()
-        gf_label = self.gf_var.get()
-        gf = None if gf_label == "无" else gf_label
+        physique = self._selected_physique()
+        gf = self._selected_gf()
         self.result_template = character_builder.build_player(self.template, talents, physique, gf)
         self.confirmed = True
         self.destroy()
@@ -601,7 +642,7 @@ class CharacterDialog(tk.Toplevel):
 
     def _center(self, master):
         self.update_idletasks()
-        w, h = 780, 620
+        w, h = 800, 720
         x = master.winfo_rootx() + (master.winfo_width() - w) // 2
         y = master.winfo_rooty() + (master.winfo_height() - h) // 2
         self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
@@ -955,7 +996,7 @@ class GameApp:
         state = WorldState()
         state.apply_template(template)
         self.game = Game(state, Memory(), self.llm)
-        self._append_system("（主持人构思开场中…）")
+        self._append_system("（" + world_gen.world_loading_phrase(template) + "）")
         self._refresh_panel()
         self._set_busy(True)
         self._async(self.game.start, self._on_opening)

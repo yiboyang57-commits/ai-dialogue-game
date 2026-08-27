@@ -20,7 +20,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.4"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.6"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 480  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -312,7 +312,8 @@ def start_game(template):
     state = WorldState(save_key=save_key)
     state.apply_template(template)
     game = Game(state, Memory(save_key=save_key), st.session_state.llm)
-    with st.spinner("主持人构思开场中…"):
+    loading = world_gen.world_loading_phrase(template)
+    with st.spinner(loading):
         opening = game.start()
     st.session_state.game = game
     st.session_state.log = []
@@ -369,7 +370,7 @@ def start_build(template):
 
 
 def render_character_build():
-    """主角构建页：自选天赋 / 体质 / 金手指，确认后开始游戏。"""
+    """主角构建页：自选/随机/自定义 天赋 · 体质 · 金手指，确认后开始游戏。"""
     template = st.session_state.get("template")
     if not template:
         st.session_state.character_step = False
@@ -383,7 +384,7 @@ def render_character_build():
         unsafe_allow_html=True,
     )
     st.markdown("### 构建主角")
-    st.caption("自选天赋、体质与金手指，然后进入故事。")
+    st.caption("自选或随机，也可以自由输入自定义项，然后进入故事。")
 
     w = template.get("world") or {}
     ctx = w.get("name") or "已选世界"
@@ -391,29 +392,72 @@ def render_character_build():
         ctx += " · " + w["background"]
     st.caption("世界观：" + ctx)
 
+    # 随机摇一摇
+    if st.button("🎲 随机摇一摇"):
+        t, p, g = character_builder.roll_build()
+        st.session_state.rb_talents = t
+        st.session_state.rb_physique = p
+        st.session_state.rb_gf = (g or "无")
+        st.session_state.rb_talent_custom = ""
+        st.session_state.rb_physique_custom = ""
+        st.session_state.rb_gf_custom = ""
+        st.rerun()
+
+    # 初始化控件默认值（避免与 key 冲突的告警）
+    st.session_state.setdefault("rb_talents", [])
+    st.session_state.setdefault("rb_physique", character_builder.physique_names()[0])
+    st.session_state.setdefault("rb_gf", character_builder.golden_finger_labels()[0])
+
     col_form, col_preview = st.columns([3, 2])
     with col_form:
         st.markdown("**自选天赋**（可多选，最多 %d 个）" % character_builder.MAX_TALENTS)
-        talents = st.multiselect("天赋", character_builder.talent_names())
+        talents = st.multiselect("天赋", character_builder.talent_names(), key="rb_talents")
         if len(talents) > character_builder.MAX_TALENTS:
             st.warning("最多选 %d 个天赋。" % character_builder.MAX_TALENTS)
             talents = talents[: character_builder.MAX_TALENTS]
+        custom_talent = st.text_input(
+            "自定义天赋名（可选）", key="rb_talent_custom",
+            placeholder="例如：重瞳 / 剑心通明 / 过目不忘…",
+        )
 
         st.markdown("**体质**（单选）")
-        physique = st.radio("体质", character_builder.physique_names(), index=0)
+        physique_choice = st.radio(
+            "体质", character_builder.physique_names() + ["🎛 自定义"], key="rb_physique"
+        )
+        if physique_choice == "🎛 自定义":
+            physique = st.text_input("自定义体质名", key="rb_physique_custom", placeholder="例如：混沌神体 / 九转玄体…")
+            physique = (physique or "").strip() or "均衡之躯"
+        else:
+            physique = physique_choice
 
         st.markdown("**金手指**（单选）")
-        gf_label = st.radio("金手指", character_builder.golden_finger_labels(), index=0)
+        gf_choice = st.radio(
+            "金手指", character_builder.golden_finger_labels() + ["🎛 自定义"], key="rb_gf"
+        )
+        if gf_choice == "🎛 自定义":
+            gf_label = st.text_input("自定义金手指名", key="rb_gf_custom", placeholder="例如：签到系统 / 时间回溯…")
+            gf_label = (gf_label or "").strip() or "无"
+        else:
+            gf_label = gf_choice
 
-    gf = None if gf_label == "无" else gf_label
+    # 汇总：自定义天赋并入选中的天赋列表
+    all_talents = list(talents)
+    if custom_talent and custom_talent.strip() and custom_talent.strip() not in all_talents:
+        all_talents.append(custom_talent.strip())
+        if len(all_talents) > character_builder.MAX_TALENTS:
+            all_talents = all_talents[: character_builder.MAX_TALENTS]
+
+    gf = None if gf_label in ("无", "") else gf_label
+
     with col_preview:
         st.markdown("**你的选择**")
-        st.info(character_builder.summarize_build(talents, physique, gf))
+        st.info(character_builder.summarize_build(all_talents, physique, gf))
+        st.caption("提示：以上均可自由输入自定义；自定义项无固定数值加成，由主持人按名字自由发挥。")
 
     c1, c2, _ = st.columns([1, 1, 2])
     with c1:
         if st.button("确认开始", type="primary", use_container_width=True):
-            start_game(character_builder.build_player(template, talents, physique, gf))
+            start_game(character_builder.build_player(template, all_talents, physique, gf))
     with c2:
         if st.button("返回世界观", use_container_width=True):
             st.session_state.character_step = False
