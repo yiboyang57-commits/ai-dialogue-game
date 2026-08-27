@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.12"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.13"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -120,6 +120,12 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-thumb { background:#d9c7ac; border-radius:8px; }
 ::-webkit-scrollbar-thumb:hover { background:#c9b291; }
+
+/* ===== 游戏主区域：聊天框与世界状态面板填满可视高度 ===== */
+div.st-key-chat_panel, div.st-key-world_panel {
+    height: calc(100vh - 200px) !important;
+    max-height: calc(100vh - 200px) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -809,7 +815,7 @@ left, right = st.columns([7, 3], gap="large")
 
 with left:
     # 聊天卡片：消息在上，可选行动与输入框在对话下方，均在框内，内部独立滚动
-    with st.container(height=CHAT_HEIGHT, border=True):
+    with st.container(height=CHAT_HEIGHT, border=True, key="chat_panel"):
         render_log(show_log)
 
         options = game.state.data.get("options") or []
@@ -827,7 +833,7 @@ with left:
 
 with right:
     # 右侧世界状态：独立滚动
-    with st.container(height=CHAT_HEIGHT):
+    with st.container(height=CHAT_HEIGHT, border=True, key="world_panel"):
         render_world_panel(game)
 
 # 处理待处理输入（此刻页面已渲染出玩家消息 + 思考占位，随后才阻塞调用模型）
