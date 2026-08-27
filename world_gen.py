@@ -288,7 +288,9 @@ def normalize_template(data):
             "status_effects": p.get("status_effects") or [],
             "talents": talents,
             "physique": p.get("physique") or None,
-            "golden_finger": p.get("golden_finger") or None,
+            "golden_fingers": p.get("golden_fingers") if isinstance(p.get("golden_fingers"), list) else (
+                [p.get("golden_finger")] if p.get("golden_finger") else []
+            ),
         },
         "initial_situation": data.get("initial_situation", "") or data.get("opening", "") or "",
         "location": {
@@ -371,9 +373,10 @@ def render_preview(t):
         tnames = "、".join(t.get("name") if isinstance(t, dict) else str(t) for t in talents)
         lines.append(f"天赋：{tnames}")
     physique = p.get("physique") or {}
-    golden_finger = p.get("golden_finger") or {}
-    if physique.get("name") or golden_finger.get("name"):
-        lines.append(f"体质：{physique.get('name') or '无'}；金手指：{golden_finger.get('name') or '无'}")
+    gfs = p.get("golden_fingers") or []
+    gf_names = [g.get("name") for g in gfs if isinstance(g, dict) and g.get("name")]
+    if physique.get("name") or gf_names:
+        lines.append(f"体质：{physique.get('name') or '无'}；金手指：{'、'.join(gf_names) if gf_names else '无'}")
 
     lines.append(f"初始情境：{t.get('initial_situation') or '（无）'}")
 

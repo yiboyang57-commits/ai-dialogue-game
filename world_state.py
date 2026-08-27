@@ -29,9 +29,9 @@ class WorldState:
                 "role_description": "",
                 "attributes": {},       # 内部数据（hp/max_hp/运气/魅力等），不向玩家显性展示
                 "status_effects": [],   # 例如 ["受伤", "疲惫"]
-                "talents": [],          # 天赋列表 [{"name","description"}]，影响判定系数
-                "physique": None,       # 体质 {"name","description"} 或 None（主角构建自选）
-                "golden_finger": None,  # 金手指 {"name","description"} 或 None（主角构建自选）
+                "talents": [],          # 天赋列表 [{"name","description","tier","drawback"}]，影响判定系数
+                "physique": None,       # 体质 {"name","description","tier","drawback"} 或 None（主角构建自选）
+                "golden_fingers": [],   # 金手指列表 [{"name","description","tier","drawback"}]（可 1~3 个）
             },
             "initial_situation": "",
             "location": {"name": "", "description": ""},
@@ -75,7 +75,14 @@ class WorldState:
         d["player"]["status_effects"] = p.get("status_effects") or []
         d["player"]["talents"] = p.get("talents") or template.get("talents") or []
         d["player"]["physique"] = p.get("physique") or None
-        d["player"]["golden_finger"] = p.get("golden_finger") or None
+        # 金手指：支持新的列表字段 golden_fingers，也兼容旧的单字段 golden_finger
+        gfs = p.get("golden_fingers")
+        if isinstance(gfs, list):
+            d["player"]["golden_fingers"] = gfs
+        elif p.get("golden_finger"):
+            d["player"]["golden_fingers"] = [p["golden_finger"]]
+        else:
+            d["player"]["golden_fingers"] = []
 
         d["initial_situation"] = template.get("initial_situation", "") or ""
 
@@ -171,9 +178,9 @@ class WorldState:
         lines.append(f"  属性：{attr_str}；状态：{status_str}")
 
         physique = p.get("physique") or {}
-        golden_finger = p.get("golden_finger") or {}
-        if physique.get("name") or golden_finger.get("name"):
-            lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{golden_finger.get('name') or '无'}")
+        gf_names = [g.get("name") for g in (p.get("golden_fingers") or []) if isinstance(g, dict) and g.get("name")]
+        if physique.get("name") or gf_names:
+            lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{'、'.join(gf_names) if gf_names else '无'}")
 
         chars = d.get("characters") or {}
         turn = d.get("meta", {}).get("turn", 0)
@@ -295,9 +302,9 @@ class WorldState:
         lines.append(f"- 玩家：{p.get('name') or '你'}（{p.get('role_description') or '未设定'}）")
         lines.append(f"  状态：{status_str}；天赋：{talent_str}")
         physique = p.get("physique") or {}
-        golden_finger = p.get("golden_finger") or {}
-        if physique.get("name") or golden_finger.get("name"):
-            lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{golden_finger.get('name') or '无'}")
+        gf_names = [g.get("name") for g in (p.get("golden_fingers") or []) if isinstance(g, dict) and g.get("name")]
+        if physique.get("name") or gf_names:
+            lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{'、'.join(gf_names) if gf_names else '无'}")
 
         chars = d.get("characters") or {}
         turn = d.get("meta", {}).get("turn", 0)

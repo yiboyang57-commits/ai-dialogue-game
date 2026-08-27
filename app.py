@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.9"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.10"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -636,13 +636,13 @@ def render_character_build():
 
     _ensure_hands(pool)
 
-    tab_t, tab_p, tab_g, tab_c = st.tabs(["🎴 天赋（选1-3）", "🧬 体质（选1）", "✨ 金手指（选1）", "✏️ 自定义"])
+    tab_t, tab_p, tab_g, tab_c = st.tabs(["🎴 天赋（选1-3）", "🧬 体质（选1）", "✨ 金手指（选1-3）", "✏️ 自定义"])
     with tab_t:
         _render_pool_picker("talent", "天赋", pool["talents"], is_multi=True, max_sel=character_builder.MAX_TALENTS)
     with tab_p:
         _render_pool_picker("physique", "体质", pool["physiques"], is_multi=False, max_sel=1)
     with tab_g:
-        _render_pool_picker("gf", "金手指", pool["golden_fingers"], is_multi=False, max_sel=1, allow_none=True)
+        _render_pool_picker("gf", "金手指", pool["golden_fingers"], is_multi=True, max_sel=3, allow_none=True)
     with tab_c:
         custom_talent = st.text_input("自定义天赋名", key="custom_talent", placeholder="叠加到已选天赋（可空）")
         custom_physique = st.text_input("自定义体质名", key="custom_physique", placeholder="覆盖上面的体质选择")
@@ -654,14 +654,18 @@ def render_character_build():
         talents.append(custom_talent.strip())
         talents = talents[: character_builder.MAX_TALENTS]
     physique = (custom_physique or "").strip() or st.session_state.get("physique_sel") or "均衡之躯"
-    gf = (custom_gf or "").strip() or st.session_state.get("gf_sel") or "无"
-    gf_name = None if gf in ("无", "") else gf
+
+    # 金手指：1~3 个（自定义覆盖）
+    gf_list = list(st.session_state.get("gf_sel") or [])
+    if (custom_gf or "").strip():
+        gf_list = [custom_gf.strip()]
+    gf_list = gf_list[:3]
 
     # 从池子里取等级、描述和代价（用于写入状态）
     all_pool_items = pool["talents"] + pool["physiques"] + pool["golden_fingers"]
     name_to_item = {x["name"]: x for x in all_pool_items}
     tier_map, desc_map, drawback_map = {}, {}, {}
-    for n in list(talents) + ([physique] if physique else []) + ([gf_name] if gf_name else []):
+    for n in list(talents) + ([physique] if physique else []) + list(gf_list):
         if n and n in name_to_item:
             tier_map[n] = name_to_item[n]["tier"]
             desc_map[n] = name_to_item[n]["description"]
@@ -669,14 +673,14 @@ def render_character_build():
 
     st.divider()
     st.markdown("**你的选择**")
-    st.info(character_builder.summarize_build(talents, physique, gf_name))
+    st.info(character_builder.summarize_build(talents, physique, gf_list))
     st.caption("等级颜色：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩；高等级带 ⚠代价；自定义项无固定等级，由主持人按名字发挥。")
 
     c1, c2, _ = st.columns([1, 1, 2])
     with c1:
         if st.button("确认开始", type="primary", use_container_width=True):
             start_game(character_builder.build_player(
-                template, talents, physique, gf_name,
+                template, talents, physique, gf_list,
                 descriptions=desc_map, tiers=tier_map, drawbacks=drawback_map))
     with c2:
         if st.button("返回世界观", use_container_width=True):
@@ -798,13 +802,9 @@ if pending:
 left, right = st.columns([7, 3], gap="large")
 
 with left:
-    # 聊天卡片：包含输入框 + 可选行动 + 消息，内部独立滚动
+    # 聊天卡片：消息在上，可选行动与输入框在对话下方，均在框内，内部独立滚动
     with st.container(height=CHAT_HEIGHT, border=True):
-        with st.form("chat_form", clear_on_submit=True):
-            user_text = st.text_input("输入行动或对话…", key="chat_input")
-            send = st.form_submit_button("发送", use_container_width=True)
-        if send and user_text and user_text.strip():
-            handle_input(user_text.strip())
+        render_log(show_log)
 
         options = game.state.data.get("options") or []
         if options and not pending:
@@ -813,7 +813,11 @@ with left:
                 if st.button(o, key=f"opt_{game.state.data['meta']['turn']}_{i}", use_container_width=True):
                     handle_input(o)
 
-        render_log(show_log)
+        with st.form("chat_form", clear_on_submit=True):
+            user_text = st.text_input("输入行动或对话…", key="chat_input")
+            send = st.form_submit_button("发送", use_container_width=True)
+        if send and user_text and user_text.strip():
+            handle_input(user_text.strip())
 
 with right:
     # 右侧世界状态：独立滚动

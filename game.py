@@ -120,9 +120,15 @@ class Game:
         physique = p.get("physique") or {}
         if physique.get("name"):
             out.append((physique.get("name"), physique.get("tier")))
-        golden_finger = p.get("golden_finger") or {}
-        if golden_finger.get("name"):
-            out.append((golden_finger.get("name"), golden_finger.get("tier")))
+        gfs = p.get("golden_fingers")
+        if isinstance(gfs, list):
+            for g in gfs:
+                if isinstance(g, dict) and g.get("name"):
+                    out.append((g.get("name"), g.get("tier")))
+        else:
+            golden_finger = p.get("golden_finger") or {}
+            if golden_finger.get("name"):
+                out.append((golden_finger.get("name"), golden_finger.get("tier")))
         return [(n, ti) for n, ti in out if n]
 
     def _consume_item(self, name):

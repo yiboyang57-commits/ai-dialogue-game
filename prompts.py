@@ -90,22 +90,30 @@ def build_system_prompt(state, rules):
             "\n这是主角的先天体质，会影响其能力与各类判定；叙事时体现其特点与影响，不要写出数值。"
         )
 
-    golden_finger = d.get("player", {}).get("golden_finger") or {}
-    if golden_finger.get("name"):
+    p_all = d.get("player", {})
+    golden_fingers = p_all.get("golden_fingers") or []
+    if not isinstance(golden_fingers, list):
+        golden_fingers = [p_all.get("golden_finger")] if p_all.get("golden_finger") else []
+    if golden_fingers:
+        gf_desc = "；".join(
+            str(g.get("name")) + "：" + str(g.get("description") or "") for g in golden_fingers if isinstance(g, dict)
+        )
         parts.append(
-            "【金手指】\n" + str(golden_finger.get("name")) + "：" + str(golden_finger.get("description") or "") +
+            "【金手指】\n" + gf_desc +
             "\n这是主角独有的外挂/优势，叙事时合理体现其作用，但不要无脑碾压、破坏剧情张力与公平性。"
         )
 
     # 高等级天赋/体质/金手指的代价（负面效果）——必须如实体现
     drawback_lines = []
-    for t in (d.get("player", {}).get("talents") or []):
+    for t in (p_all.get("talents") or []):
         if isinstance(t, dict) and t.get("drawback"):
             drawback_lines.append(str(t.get("name")) + "：" + str(t["drawback"]))
-    for key in ("physique", "golden_finger"):
-        x = d.get("player", {}).get(key) or {}
-        if isinstance(x, dict) and x.get("drawback"):
-            drawback_lines.append(str(x.get("name")) + "：" + str(x["drawback"]))
+    phy = p_all.get("physique") or {}
+    if isinstance(phy, dict) and phy.get("drawback"):
+        drawback_lines.append(str(phy.get("name")) + "：" + str(phy["drawback"]))
+    for g in golden_fingers:
+        if isinstance(g, dict) and g.get("drawback"):
+            drawback_lines.append(str(g.get("name")) + "：" + str(g["drawback"]))
     if drawback_lines:
         parts.append(
             "【主角能力的代价/负面效果——必须在剧情中如实体现，不得忽略】\n" +

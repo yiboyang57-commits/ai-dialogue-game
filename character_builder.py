@@ -28,6 +28,23 @@ TIER_STYLES = {
     "炫彩": {"fg": "#8e44ad", "bg": "#f6ecfa", "border": "#d9a8e8"},
 }
 
+# 等级别名归一化：LLM 可能返回“金色/传说/史诗”等，统一映射到标准等级
+_TIER_ALIASES = {
+    "白": "白", "白色": "白", "普通": "白", "平凡": "白",
+    "绿": "绿", "绿色": "绿", "优良": "绿",
+    "蓝": "蓝", "蓝色": "蓝", "稀有": "蓝",
+    "紫": "紫", "紫色": "紫", "史诗": "紫",
+    "金": "金", "金色": "金", "传说": "金",
+    "红": "红", "红色": "红", "神话": "红",
+    "炫彩": "炫彩", "彩色": "炫彩", "彩虹": "炫彩", "彩": "炫彩",
+}
+
+
+def _canon_tier(tier):
+    if tier in TIERS:
+        return tier
+    return _TIER_ALIASES.get(str(tier).strip(), "蓝")
+
 
 # ---------------------------------------------------------------- 天赋
 # 名称需与 judgment.TALENT_MODIFIERS 中的键一一对应，才能生效。
@@ -165,24 +182,24 @@ GENERATE_POOL_TOOL = {
         "description": (
             "根据给定世界观，生成一批该世界风格的『天赋 / 体质 / 金手指』候选池。"
             "每个候选含 name、description、tier、drawback（drawback 仅高等级需要）。"
-            "要求：名字贴合世界观题材；等级整体服从峰值在蓝色的正态分布"
-            "（蓝最多、绿紫次之、白更少、金更少、红很少、炫彩极稀有）；名字强弱与等级一致。"
-            "每个类别都必须保底包含至少 1 个炫彩、2 个红、3 个金，且这些金/红/炫彩项"
-            "都要写 drawback（代价/负面效果），越逆天的能力代价越沉重，避免变成无代价的爽游。"
+            "要求：名字必须原创、贴合世界观题材，不要复用任何内置预设名（如天命之子、先天道体、随身系统等）；"
+            "等级分布以『金、紫』为最多（峰值在金紫之间），蓝次之，红、绿再次，白较少，炫彩极稀有；"
+            "名字强弱与等级一致。每个类别至少包含 1 个炫彩、2 个红、3 个金（越多越好、越多样越好），"
+            "且这些金/红/炫彩项都要写 drawback（代价/负面效果），越逆天的能力代价越沉重，避免变成无代价的爽游。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "talents": {"type": "array", "description": "天赋候选，约 50 个。", "items": _POOL_ITEM_SCHEMA},
-                "physiques": {"type": "array", "description": "体质候选，约 25 个。", "items": _POOL_ITEM_SCHEMA},
-                "golden_fingers": {"type": "array", "description": "金手指候选，约 20 个。", "items": _POOL_ITEM_SCHEMA},
+                "talents": {"type": "array", "description": "天赋候选，约 50 个：白约3、绿约5、蓝约9、紫约14、金约13、红约5、炫彩约2。", "items": _POOL_ITEM_SCHEMA},
+                "physiques": {"type": "array", "description": "体质候选，约 25 个：白约2、绿约3、蓝约5、紫约6、金约6、红约2、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
+                "golden_fingers": {"type": "array", "description": "金手指候选，约 20 个：白约1、绿约2、蓝约4、紫约5、金约5、红约2、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
             },
             "required": ["talents", "physiques", "golden_fingers"],
         },
     },
 }
 
-# 每个候选池必须保底的高等级数量
+# 每个候选池必须保底的高等级数量（安全底线，兜底表可覆盖）
 _POOL_FLOOR = {"炫彩": 1, "红": 2, "金": 3}
 
 # 高等级项若 LLM 漏写代价，兜底补一句通用代价
@@ -231,7 +248,7 @@ def _normalize_pool(args):
             name = (it.get("name") or "").strip()
             if not name:
                 continue
-            tier = it.get("tier") if it.get("tier") in TIERS else "蓝"
+            tier = _canon_tier(it.get("tier"))
             drawback = (it.get("drawback") or "").strip()
             if not drawback and tier in _GENERIC_DRAWBACKS:
                 drawback = _GENERIC_DRAWBACKS[tier]
@@ -268,15 +285,15 @@ def _ensure_floor(pool):
 
 
 _PRESET_TALENT_TIERS = {
-    "天命之子": "金", "福星高照": "紫", "魅惑天成": "紫", "巧舌如簧": "蓝",
-    "神机妙算": "蓝", "身手敏捷": "绿", "百战之躯": "蓝", "炼器天才": "蓝", "气运加身": "紫",
+    "天命之子": "金", "福星高照": "金", "魅惑天成": "紫", "巧舌如簧": "蓝",
+    "神机妙算": "紫", "身手敏捷": "绿", "百战之躯": "蓝", "炼器天才": "蓝", "气运加身": "金",
 }
 _PRESET_PHYSIQUE_TIERS = {
-    "均衡之躯": "白", "先天道体": "紫", "纯阳之体": "蓝", "玄阴之体": "蓝",
+    "均衡之躯": "白", "先天道体": "金", "纯阳之体": "蓝", "玄阴之体": "紫",
     "霸绝武体": "金", "万毒不侵": "紫",
 }
 _PRESET_GF_TIERS = {
-    "随身系统": "蓝", "天机推演": "紫", "存档读档": "红", "天命气运": "金", "点石成金": "蓝",
+    "随身系统": "蓝", "天机推演": "金", "存档读档": "红", "天命气运": "金", "点石成金": "紫",
 }
 
 
@@ -340,11 +357,17 @@ def sample_hand(pool_items, n=9, locked=None):
 
 
 def summarize_build(talent_names_list, physique_name, golden_finger_name):
-    """把主角构建结果渲染成一段可读摘要。"""
+    """把主角构建结果渲染成一段可读摘要。golden_finger_name 可为单个名或列表。"""
+    gfs = golden_finger_name
+    if isinstance(gfs, str):
+        gfs = [gfs] if gfs and gfs != "无" else []
+    elif not isinstance(gfs, (list, tuple)):
+        gfs = []
+    gf_display = "、".join([g for g in gfs if g and g != "无"]) or "无"
     lines = [
         "天赋：" + ("、".join(talent_names_list) if talent_names_list else "无"),
         "体质：" + (physique_name or "无"),
-        "金手指：" + (golden_finger_name or "无"),
+        "金手指：" + gf_display,
     ]
     return "\n".join(lines)
 
@@ -408,14 +431,23 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
                 base = c.get("player_power", 10) if isinstance(c.get("player_power"), (int, float)) else 10
                 c["player_power"] = base + delta
 
-    # 金手指
+    # 金手指（支持 1~3 个：golden_finger_name 可为单个名或列表）
+    gf_names = golden_finger_name
+    if isinstance(gf_names, str):
+        gf_names = [gf_names] if gf_names and gf_names != "无" else []
+    elif not isinstance(gf_names, (list, tuple)):
+        gf_names = []
+    gf_names = [g for g in gf_names if g and g != "无"]
+
     p.pop("golden_finger", None)
-    if golden_finger_name and golden_finger_name != "无":
-        gf = _find(GOLDEN_FINGERS, golden_finger_name)
-        gdesc = gf["description"] if gf else descs.get(golden_finger_name, "")
-        p["golden_finger"] = {
-            "name": golden_finger_name, "description": gdesc,
-            "tier": tier_map.get(golden_finger_name), "drawback": drawback_map.get(golden_finger_name, ""),
-        }
+    gfs = []
+    for gname in gf_names:
+        gf = _find(GOLDEN_FINGERS, gname)
+        gdesc = gf["description"] if gf else descs.get(gname, "")
+        gfs.append({
+            "name": gname, "description": gdesc,
+            "tier": tier_map.get(gname), "drawback": drawback_map.get(gname, ""),
+        })
+    p["golden_fingers"] = gfs
 
     return t

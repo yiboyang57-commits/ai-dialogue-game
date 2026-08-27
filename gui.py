@@ -954,9 +954,10 @@ class GameApp:
         blocks.append(("　·　".join(status) + "\n", "p_body" if status else "p_muted"))
         blocks.append(("天赋：" + ("、".join(talents) if talents else "无") + "\n", "p_muted"))
         physique = player.get("physique") or {}
-        gf = player.get("golden_finger") or {}
-        if physique.get("name") or gf.get("name"):
-            blocks.append(("体质：" + (physique.get("name") or "无") + "　金手指：" + (gf.get("name") or "无") + "\n", "p_muted"))
+        gfs = player.get("golden_fingers") or []
+        gf_names = [g.get("name") for g in gfs if isinstance(g, dict) and g.get("name")]
+        if physique.get("name") or gf_names:
+            blocks.append(("体质：" + (physique.get("name") or "无") + "　金手指：" + ("、".join(gf_names) if gf_names else "无") + "\n", "p_muted"))
 
         self._render_panel_blocks(blocks)
 
