@@ -1,0 +1,6 @@
+config.json
+save/
+__pycache__/
+*.pyc
+dist/
+.DS_Store

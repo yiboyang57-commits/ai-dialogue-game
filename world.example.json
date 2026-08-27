@@ -1,0 +1,48 @@
+{
+  "world": {
+    "name": "雾都",
+    "background": "一座终年被工业浓雾笼罩的蒸汽都市。齿轮与锅炉昼夜轰鸣，贵族与贫民被第七区的铁桥隔开；每到雾夜，城里就会有人离奇失踪。",
+    "rules": "机械与神秘学并存；驱动“雾灵术”需要付出等价的代价。",
+    "style": "冷峻写实的侦探小说笔法，压抑、潮湿、雾气弥漫的氛围，多用环境与细节烘托悬念。"
+  },
+  "player": {
+    "name": "",
+    "role_description": "一名调查连环失踪案的私家侦探，擅长观察与推理，随身带着一把老旧的左轮手枪。",
+    "attributes": {"hp": 100, "max_hp": 100, "理智": 100},
+    "talents": [
+      {"name": "神机妙算", "description": "洞察推理与寻物更有把握"}
+    ],
+    "physique": {"name": "玄阴之体", "description": "阴柔内敛、感知敏锐，善于察言观色与隐匿行踪。"},
+    "golden_finger": null
+  },
+  "initial_situation": "深夜，你的事务所门被急促地敲响。打开门，一个浑身湿透的少年瘫倒在地，手里攥着一枚刻着乌鸦的铜币。",
+  "location": {
+    "name": "第七区·侦探事务所",
+    "description": "狭小、堆满案卷的办公室，煤油灯忽明忽暗。"
+  },
+  "time": "深夜",
+  "characters": {
+    "老王": {
+      "description": "常去的小酒馆老板，消息灵通。",
+      "attitude_toward_player": "友善",
+      "location": "橡木酒馆",
+      "status": "存活"
+    }
+  },
+  "inventory": [
+    {"name": "左轮手枪", "quantity": 1, "description": "六发子弹的老旧手枪"},
+    {"name": "黄铜怀表", "quantity": 1, "description": "亡父的遗物"},
+    {"name": "金币", "quantity": 50, "description": "通用货币"},
+    {"name": "护身符", "quantity": 1, "description": "一次性法宝，可保一次逃跑"}
+  ],
+  "plot_flags": {
+    "案件开始": false
+  },
+  "current_goal": "查清敲门少年的身份与他带来的铜币。",
+  "combat": {
+    "field": "战力值",
+    "player_power": 8,
+    "realm_gap": 4,
+    "curve": "realm_gap"
+  }
+}
