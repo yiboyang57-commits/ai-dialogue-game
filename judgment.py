@@ -160,17 +160,43 @@ def infer_modifier(name):
     return mods
 
 
-def talent_bonus(category, talents):
-    """累加天赋对某类判定（category）的 logit 系数。talents 为天赋/体质/金手指名列表。
+# ---- 天赋等级 → 强度倍率（白最弱，炫彩最强；蓝为基准 1.0）----
+TIER_SCALE = {
+    "白": 0.4,
+    "绿": 0.7,
+    "蓝": 1.0,
+    "紫": 1.3,
+    "金": 1.7,
+    "红": 2.2,
+    "炫彩": 2.8,
+}
 
-    预设项用 TALENT_MODIFIERS 的精确系数；自定义项按名字关键词推断系数。
+
+def _name_and_tier(t):
+    """从天赋条目里解出 (名字, 等级)。支持 str / (name, tier) / {"name","tier"}。"""
+    if isinstance(t, dict):
+        return t.get("name"), t.get("tier")
+    if isinstance(t, (tuple, list)) and len(t) >= 2:
+        return t[0], t[1]
+    return t, None
+
+
+def talent_bonus(category, talents):
+    """累加天赋对某类判定（category）的 logit 系数。talents 为天赋/体质/金手指条目。
+
+    预设项用 TALENT_MODIFIERS 的精确系数；自定义项按名字关键词推断系数；
+    条目可带等级 tier（白/绿/蓝/紫/金/红/炫彩），等级越高，整体系数乘以越大倍率。
     """
     total = 0.0
     for t in (talents or []):
-        m = TALENT_MODIFIERS.get(t)
+        name, tier = _name_and_tier(t)
+        if not name:
+            continue
+        m = TALENT_MODIFIERS.get(name)
         if m is None:
-            m = infer_modifier(t)
-        total += m.get("global", 0.0) + m.get(category, 0.0)
+            m = infer_modifier(name)
+        scale = TIER_SCALE.get(tier, 1.0)
+        total += (m.get("global", 0.0) + m.get(category, 0.0)) * scale
     return total
 
 

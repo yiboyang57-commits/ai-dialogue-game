@@ -13,6 +13,22 @@ import copy
 import random
 
 
+# ---------------------------------------------------------------- 天赋等级
+# 从低到高：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩
+TIERS = ["白", "绿", "蓝", "紫", "金", "红", "炫彩"]
+
+# 用于 UI 展示的颜色（fg=文字/描边，bg=卡片底，border=边框），已适配暖米色背景
+TIER_STYLES = {
+    "白":   {"fg": "#7a7a7a", "bg": "#fdfdf9", "border": "#d9d4c8"},
+    "绿":   {"fg": "#3c7a3c", "bg": "#eaf4e8", "border": "#bfd8bb"},
+    "蓝":   {"fg": "#2f6db3", "bg": "#e8f0f8", "border": "#c2d6ec"},
+    "紫":   {"fg": "#7a4fd0", "bg": "#efe8f8", "border": "#d6c7ee"},
+    "金":   {"fg": "#b8860b", "bg": "#faf0d8", "border": "#e8d5a0"},
+    "红":   {"fg": "#c0392b", "bg": "#fae6e2", "border": "#eebfb6"},
+    "炫彩": {"fg": "#8e44ad", "bg": "#f6ecfa", "border": "#d9a8e8"},
+}
+
+
 # ---------------------------------------------------------------- 天赋
 # 名称需与 judgment.TALENT_MODIFIERS 中的键一一对应，才能生效。
 TALENTS = [
@@ -129,6 +145,132 @@ def roll_build():
     return roll_talents(), roll_physique(), roll_golden_finger()
 
 
+# ---------------------------------------------------------------- 候选池生成（按世界观）
+
+_POOL_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "候选名字，贴合世界观题材。"},
+        "description": {"type": "string", "description": "一句话效果说明。"},
+        "tier": {"type": "string", "enum": TIERS, "description": "等级，白最弱、炫彩最强。"},
+    },
+    "required": ["name", "tier"],
+}
+
+GENERATE_POOL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "generate_character_pool",
+        "description": (
+            "根据给定世界观，生成一批该世界风格的『天赋 / 体质 / 金手指』候选池。"
+            "每个候选含 name、description、tier。"
+            "要求：名字贴合世界观题材；等级整体服从峰值在蓝色的正态分布"
+            "（蓝最多、绿紫次之、白更少、金更少、红很少、炫彩极稀有）；名字强弱与等级一致。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "talents": {"type": "array", "description": "天赋候选，约 40 个。", "items": _POOL_ITEM_SCHEMA},
+                "physiques": {"type": "array", "description": "体质候选，约 18 个。", "items": _POOL_ITEM_SCHEMA},
+                "golden_fingers": {"type": "array", "description": "金手指候选，约 14 个。", "items": _POOL_ITEM_SCHEMA},
+            },
+            "required": ["talents", "physiques", "golden_fingers"],
+        },
+    },
+}
+
+
+def _normalize_pool(args):
+    """校验并清洗 LLM 返回的候选池，去掉非法条目。"""
+    out = {"talents": [], "physiques": [], "golden_fingers": []}
+    for key in out:
+        for it in (args.get(key) or []):
+            if not isinstance(it, dict):
+                continue
+            name = (it.get("name") or "").strip()
+            if not name:
+                continue
+            tier = it.get("tier") if it.get("tier") in TIERS else "蓝"
+            out[key].append({
+                "name": name,
+                "description": (it.get("description") or "").strip(),
+                "tier": tier,
+            })
+    return out
+
+
+_PRESET_TALENT_TIERS = {
+    "天命之子": "金", "福星高照": "紫", "魅惑天成": "紫", "巧舌如簧": "蓝",
+    "神机妙算": "蓝", "身手敏捷": "绿", "百战之躯": "蓝", "炼器天才": "蓝", "气运加身": "紫",
+}
+_PRESET_PHYSIQUE_TIERS = {
+    "均衡之躯": "白", "先天道体": "紫", "纯阳之体": "蓝", "玄阴之体": "蓝",
+    "霸绝武体": "金", "万毒不侵": "紫",
+}
+_PRESET_GF_TIERS = {
+    "随身系统": "蓝", "天机推演": "紫", "存档读档": "红", "天命气运": "金", "点石成金": "蓝",
+}
+
+
+def _fallback_pool():
+    """LLM 生成失败时，用内置预设凑一个候选池（保底）。"""
+    return {
+        "talents": [
+            {"name": t["name"], "description": t["description"], "tier": _PRESET_TALENT_TIERS.get(t["name"], "蓝")}
+            for t in TALENTS
+        ],
+        "physiques": [
+            {"name": p["name"], "description": p["description"], "tier": _PRESET_PHYSIQUE_TIERS.get(p["name"], "蓝")}
+            for p in PHYSIQUES
+        ],
+        "golden_fingers": [
+            {"name": g["name"], "description": g["description"], "tier": _PRESET_GF_TIERS.get(g["name"], "蓝")}
+            for g in GOLDEN_FINGERS if g["name"]
+        ],
+    }
+
+
+def generate_pool(llm, template):
+    """调用 LLM 按世界观生成候选池；失败则回退到内置预设池。"""
+    w = (template.get("world") or {}) if isinstance(template, dict) else {}
+    combat = (template.get("combat") or {}) if isinstance(template, dict) else {}
+    bg = w.get("background") or ""
+    rules = w.get("rules") or ""
+    field = combat.get("field") or "战力"
+    msgs = [
+        {"role": "system", "content": "你是文字冒险游戏的设定生成器，只输出结构化的角色候选池，不输出多余文字。"},
+        {"role": "user", "content": (
+            "请为下面的世界观生成候选池，并调用 generate_character_pool 返回结果。\n\n"
+            f"世界观背景：{bg}\n世界规则：{rules}\n战力量纲：{field}\n"
+        )},
+    ]
+    try:
+        _content, name, args = llm.call_tool(msgs, GENERATE_POOL_TOOL, temperature=0.9)
+        if name == "generate_character_pool" and isinstance(args, dict):
+            pool = _normalize_pool(args)
+            if pool["talents"] or pool["physiques"] or pool["golden_fingers"]:
+                return pool
+    except Exception:
+        pass
+    return _fallback_pool()
+
+
+def sample_hand(pool_items, n=9, locked=None):
+    """从候选池随机抽 n 个；locked 若存在则保留在结果里（其余仍随机）。"""
+    items = list(pool_items or [])
+    if not items:
+        return []
+    locked_item = next((x for x in items if x.get("name") == locked), None) if locked else None
+    others = [x for x in items if x.get("name") != locked]
+    n = max(1, min(n, len(items)))
+    if locked_item is not None:
+        rest = random.sample(others, min(n - 1, len(others)))
+        hand = [locked_item] + rest
+    else:
+        hand = random.sample(items, n)
+    return hand
+
+
 def summarize_build(talent_names_list, physique_name, golden_finger_name):
     """把主角构建结果渲染成一段可读摘要。"""
     lines = [
@@ -140,15 +282,17 @@ def summarize_build(talent_names_list, physique_name, golden_finger_name):
 
 
 def build_player(template, talent_names_list=None, physique_name=None, golden_finger_name=None,
-                 descriptions=None):
+                 descriptions=None, tiers=None):
     """把主角构建选择合并进世界观模板，返回新模板（原模板不被修改）。
 
     - talent_names_list: 自选天赋名列表（0~MAX_TALENTS 个），覆盖模板自带的天赋。
     - physique_name: 体质名（对应 PHYSIQUES，或自定义名字）。
     - golden_finger_name: 金手指名（对应 GOLDEN_FINGERS；None/「无」表示不带，或自定义名字）。
     - descriptions: {名字: 描述}，用于给自定义项补一句说明；预设项自动用目录里的描述。
+    - tiers: {名字: 等级}，等级会写入条目并影响判定强度。
     """
     descs = descriptions or {}
+    tier_map = tiers or {}
     t = copy.deepcopy(template)
     p = t.setdefault("player", {})
     if not isinstance(p, dict):
@@ -160,7 +304,7 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     for name in (talent_names_list or []):
         entry = _find(TALENTS, name)
         desc = entry["description"] if entry else descs.get(name, "")
-        talents.append({"name": name, "description": desc})
+        talents.append({"name": name, "description": desc, "tier": tier_map.get(name)})
     p["talents"] = talents
 
     # 体质
@@ -168,7 +312,7 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     physique = _find(PHYSIQUES, physique_name)
     if physique_name:
         pdesc = physique["description"] if physique else descs.get(physique_name, "")
-        p["physique"] = {"name": physique_name, "description": pdesc}
+        p["physique"] = {"name": physique_name, "description": pdesc, "tier": tier_map.get(physique_name)}
         if physique:
             # 预设体质才应用属性/战力加成
             attrs = p.get("attributes")
@@ -193,6 +337,6 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     if golden_finger_name and golden_finger_name != "无":
         gf = _find(GOLDEN_FINGERS, golden_finger_name)
         gdesc = gf["description"] if gf else descs.get(golden_finger_name, "")
-        p["golden_finger"] = {"name": golden_finger_name, "description": gdesc}
+        p["golden_finger"] = {"name": golden_finger_name, "description": gdesc, "tier": tier_map.get(golden_finger_name)}
 
     return t

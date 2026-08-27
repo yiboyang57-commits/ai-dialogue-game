@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.7"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.8"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -348,6 +348,16 @@ def _load_named_slot(key):
     st.rerun()
 
 
+def _stop_world():
+    """停止当前世界，清空游戏与构建状态，返回世界观生成界面。"""
+    for k in ("game", "log", "current_slot", "pending_input", "character_step", "character_pool",
+              "ask_stop", "saving", "stop_after_save", "template",
+              "talent_hand", "physique_hand", "gf_hand", "talent_lock", "physique_lock", "gf_lock",
+              "talent_sel", "physique_sel", "gf_sel"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
+
 def load_into_session(state_data, memory_dict, save_key=""):
     """把世界状态 + 记忆数据装入当前会话并切到游戏界面（用于导入存档）。"""
     state = WorldState(state_data, save_key=save_key)
@@ -403,7 +413,10 @@ def render_save_sidebar():
                 if c1.button("确认保存", type="primary", use_container_width=True):
                     if _save_to_named_slot(name):
                         st.session_state.saving = False
-                        st.rerun()
+                        if st.session_state.get("stop_after_save"):
+                            _stop_world()
+                        else:
+                            st.rerun()
                     else:
                         st.warning("名字不能为空")
                 if c2.button("取消", use_container_width=True):
@@ -444,20 +457,151 @@ def render_save_sidebar():
 
         st.caption("云端磁盘是临时的，跨设备请用「导出/导入」。")
 
+        # 停止世界
+        if game is not None:
+            st.divider()
+            if not st.session_state.get("ask_stop"):
+                if st.button("🛑 停止世界", use_container_width=True):
+                    st.session_state.ask_stop = True
+                    st.rerun()
+            else:
+                st.warning("确定停止当前世界吗？")
+                c1, c2, c3 = st.columns(3)
+                if c1.button("保存后停止", use_container_width=True):
+                    st.session_state.stop_after_save = True
+                    st.session_state.saving = True
+                    st.rerun()
+                if c2.button("不保存", use_container_width=True):
+                    _stop_world()
+                if c3.button("取消", use_container_width=True):
+                    st.session_state.ask_stop = False
+                    st.rerun()
+
 
 def start_build(template):
-    """世界观已定，进入主角构建步骤。"""
+    """世界观已定，进入主角构建步骤（重置候选池与选择状态）。"""
     st.session_state.template = template
     st.session_state.character_step = True
+    st.session_state.character_pool = None
+    for k in ("talent_hand", "physique_hand", "gf_hand", "talent_lock", "physique_lock", "gf_lock",
+              "talent_sel", "physique_sel", "gf_sel"):
+        st.session_state.pop(k, None)
     st.rerun()
 
 
+def _ensure_hands(pool):
+    """确保每个类别的 9 张手牌已生成。"""
+    mapping = {"talent": "talents", "physique": "physiques", "gf": "golden_fingers"}
+    for cat, key in mapping.items():
+        hand_key = cat + "_hand"
+        if not st.session_state.get(hand_key):
+            st.session_state[hand_key] = character_builder.sample_hand(pool.get(key, []), 9)
+
+
+def _toggle_lock(cat, name):
+    lock_key = cat + "_lock"
+    st.session_state[lock_key] = None if st.session_state.get(lock_key) == name else name
+    st.rerun()
+
+
+def _toggle_select(cat, name, is_multi, max_sel):
+    sel_key = cat + "_sel"
+    if is_multi:
+        cur = list(st.session_state.get(sel_key) or [])
+        if name in cur:
+            cur.remove(name)
+        else:
+            if len(cur) >= max_sel:
+                st.warning(f"最多选 {max_sel} 个。")
+                return
+            cur.append(name)
+        st.session_state[sel_key] = cur
+    else:
+        st.session_state[sel_key] = None if st.session_state.get(sel_key) == name else name
+    st.rerun()
+
+
+def _render_pool_card(cat, item, idx, locked, sel, is_multi, max_sel):
+    name = item["name"]
+    tier = item.get("tier") or "蓝"
+    style = character_builder.TIER_STYLES.get(tier, character_builder.TIER_STYLES["蓝"])
+    is_locked = (locked == name)
+    is_sel = (name in sel) if is_multi else (sel == name)
+
+    if tier == "炫彩":
+        border_css = "linear-gradient(90deg,#f00,#ff8a00,#ffe600,#2bd64f,#2bd6ff,#7a4fd0,#ff5ad0)"
+        left_css = "border-left:4px solid transparent;"
+    else:
+        border_css = style["border"]
+        left_css = f"border-left:4px solid {style['fg']};"
+
+    st.markdown(
+        f'<div style="border:1px solid {border_css}; {left_css} background:{style["bg"]}; '
+        f'border-radius:10px; padding:8px 10px; min-height:96px;">'
+        f'<div style="font-weight:700; color:{style["fg"]};">{esc(name)}</div>'
+        f'<div style="font-size:11px; color:{style["fg"]}; opacity:.85;">等级 · {tier}</div>'
+        f'<div style="font-size:12px; color:#6b5f52; margin-top:4px;">{esc(item.get("description") or "")}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("🔒已锁" if is_locked else "🔓锁定", key=f"lock_{cat}_{idx}", use_container_width=True):
+            _toggle_lock(cat, name)
+    with b2:
+        if st.button("✓已选" if is_sel else "选择", key=f"sel_{cat}_{idx}", use_container_width=True):
+            _toggle_select(cat, name, is_multi, max_sel)
+
+
+def _render_pool_picker(cat, title, pool_items, is_multi, max_sel, allow_none=False):
+    hand_key = cat + "_hand"
+    lock_key = cat + "_lock"
+    sel_key = cat + "_sel"
+    locked = st.session_state.get(lock_key)
+
+    st.markdown(f"**{title}**")
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        if st.button("🎲 重新roll", key=f"roll_{cat}", use_container_width=True):
+            st.session_state[hand_key] = character_builder.sample_hand(pool_items, 9, locked)
+            st.rerun()
+    with c2:
+        if locked:
+            st.caption("已锁定：" + locked + "（点卡片 🔒 解锁）")
+        else:
+            st.caption("可锁定 1 个，再 roll 时它不变")
+
+    if allow_none:
+        if st.button("🚫 不携带金手指", key=f"none_{cat}", use_container_width=True):
+            st.session_state[sel_key] = None
+            st.rerun()
+
+    hand = st.session_state.get(hand_key) or []
+    sel = st.session_state.get(sel_key)
+    if is_multi:
+        sel = sel if isinstance(sel, list) else []
+    for r in range(3):
+        cols = st.columns(3)
+        for c in range(3):
+            idx = r * 3 + c
+            if idx >= len(hand):
+                continue
+            with cols[c]:
+                _render_pool_card(cat, hand[idx], idx, locked, sel, is_multi, max_sel)
+
+
 def render_character_build():
-    """主角构建页：自选/随机/自定义 天赋 · 体质 · 金手指，确认后开始游戏。"""
+    """主角构建页：按世界观生成的候选池 + roll/锁定/选定 + 自定义。"""
     template = st.session_state.get("template")
     if not template:
         st.session_state.character_step = False
         st.rerun()
+
+    # 首次进入：按世界观生成候选池（一次 API 调用）
+    if not st.session_state.get("character_pool"):
+        with st.spinner("正在按世界观生成候选天赋/体质/金手指…"):
+            st.session_state.character_pool = character_builder.generate_pool(st.session_state.llm, template)
+    pool = st.session_state.character_pool
 
     st.markdown(
         '<div class="gm-header"><div class="gm-brand">'
@@ -467,7 +611,7 @@ def render_character_build():
         unsafe_allow_html=True,
     )
     st.markdown("### 构建主角")
-    st.caption("自选或随机，也可以自由输入自定义项，然后进入故事。")
+    st.caption("roll 候选、锁定心仪的，选定后进入故事。")
 
     w = template.get("world") or {}
     ctx = w.get("name") or "已选世界"
@@ -475,72 +619,55 @@ def render_character_build():
         ctx += " · " + w["background"]
     st.caption("世界观：" + ctx)
 
-    # 随机摇一摇
-    if st.button("🎲 随机摇一摇"):
-        t, p, g = character_builder.roll_build()
-        st.session_state.rb_talents = t
-        st.session_state.rb_physique = p
-        st.session_state.rb_gf = (g or "无")
-        st.session_state.rb_talent_custom = ""
-        st.session_state.rb_physique_custom = ""
-        st.session_state.rb_gf_custom = ""
+    if st.button("♻️ 重新生成候选池"):
+        st.session_state.character_pool = None
+        for k in ("talent_hand", "physique_hand", "gf_hand", "talent_lock", "physique_lock", "gf_lock",
+                  "talent_sel", "physique_sel", "gf_sel"):
+            st.session_state.pop(k, None)
         st.rerun()
 
-    # 初始化控件默认值（避免与 key 冲突的告警）
-    st.session_state.setdefault("rb_talents", [])
-    st.session_state.setdefault("rb_physique", character_builder.physique_names()[0])
-    st.session_state.setdefault("rb_gf", character_builder.golden_finger_labels()[0])
+    _ensure_hands(pool)
 
-    col_form, col_preview = st.columns([3, 2])
-    with col_form:
-        st.markdown("**自选天赋**（可多选，最多 %d 个）" % character_builder.MAX_TALENTS)
-        talents = st.multiselect("天赋", character_builder.talent_names(), key="rb_talents")
-        if len(talents) > character_builder.MAX_TALENTS:
-            st.warning("最多选 %d 个天赋。" % character_builder.MAX_TALENTS)
-            talents = talents[: character_builder.MAX_TALENTS]
-        custom_talent = st.text_input(
-            "自定义天赋名（可选）", key="rb_talent_custom",
-            placeholder="例如：重瞳 / 剑心通明 / 过目不忘…",
-        )
+    tab_t, tab_p, tab_g, tab_c = st.tabs(["🎴 天赋（选1-3）", "🧬 体质（选1）", "✨ 金手指（选1）", "✏️ 自定义"])
+    with tab_t:
+        _render_pool_picker("talent", "天赋", pool["talents"], is_multi=True, max_sel=character_builder.MAX_TALENTS)
+    with tab_p:
+        _render_pool_picker("physique", "体质", pool["physiques"], is_multi=False, max_sel=1)
+    with tab_g:
+        _render_pool_picker("gf", "金手指", pool["golden_fingers"], is_multi=False, max_sel=1, allow_none=True)
+    with tab_c:
+        custom_talent = st.text_input("自定义天赋名", key="custom_talent", placeholder="叠加到已选天赋（可空）")
+        custom_physique = st.text_input("自定义体质名", key="custom_physique", placeholder="覆盖上面的体质选择")
+        custom_gf = st.text_input("自定义金手指名", key="custom_gf", placeholder="覆盖上面的金手指选择")
 
-        st.markdown("**体质**（单选）")
-        physique_choice = st.radio(
-            "体质", character_builder.physique_names() + ["🎛 自定义"], key="rb_physique"
-        )
-        if physique_choice == "🎛 自定义":
-            physique = st.text_input("自定义体质名", key="rb_physique_custom", placeholder="例如：混沌神体 / 九转玄体…")
-            physique = (physique or "").strip() or "均衡之躯"
-        else:
-            physique = physique_choice
+    # 汇总
+    talents = list(st.session_state.get("talent_sel") or [])
+    if (custom_talent or "").strip():
+        talents.append(custom_talent.strip())
+        talents = talents[: character_builder.MAX_TALENTS]
+    physique = (custom_physique or "").strip() or st.session_state.get("physique_sel") or "均衡之躯"
+    gf = (custom_gf or "").strip() or st.session_state.get("gf_sel") or "无"
+    gf_name = None if gf in ("无", "") else gf
 
-        st.markdown("**金手指**（单选）")
-        gf_choice = st.radio(
-            "金手指", character_builder.golden_finger_labels() + ["🎛 自定义"], key="rb_gf"
-        )
-        if gf_choice == "🎛 自定义":
-            gf_label = st.text_input("自定义金手指名", key="rb_gf_custom", placeholder="例如：签到系统 / 时间回溯…")
-            gf_label = (gf_label or "").strip() or "无"
-        else:
-            gf_label = gf_choice
+    # 从池子里取等级和描述（用于写入状态）
+    all_pool_items = pool["talents"] + pool["physiques"] + pool["golden_fingers"]
+    name_to_item = {x["name"]: x for x in all_pool_items}
+    tier_map, desc_map = {}, {}
+    for n in list(talents) + ([physique] if physique else []) + ([gf_name] if gf_name else []):
+        if n and n in name_to_item:
+            tier_map[n] = name_to_item[n]["tier"]
+            desc_map[n] = name_to_item[n]["description"]
 
-    # 汇总：自定义天赋并入选中的天赋列表
-    all_talents = list(talents)
-    if custom_talent and custom_talent.strip() and custom_talent.strip() not in all_talents:
-        all_talents.append(custom_talent.strip())
-        if len(all_talents) > character_builder.MAX_TALENTS:
-            all_talents = all_talents[: character_builder.MAX_TALENTS]
-
-    gf = None if gf_label in ("无", "") else gf_label
-
-    with col_preview:
-        st.markdown("**你的选择**")
-        st.info(character_builder.summarize_build(all_talents, physique, gf))
-        st.caption("提示：以上均可自由输入自定义；自定义项无固定数值加成，由主持人按名字自由发挥。")
+    st.divider()
+    st.markdown("**你的选择**")
+    st.info(character_builder.summarize_build(talents, physique, gf_name))
+    st.caption("等级颜色：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩；自定义项无固定等级，由主持人按名字发挥。")
 
     c1, c2, _ = st.columns([1, 1, 2])
     with c1:
         if st.button("确认开始", type="primary", use_container_width=True):
-            start_game(character_builder.build_player(template, all_talents, physique, gf))
+            start_game(character_builder.build_player(
+                template, talents, physique, gf_name, descriptions=desc_map, tiers=tier_map))
     with c2:
         if st.button("返回世界观", use_container_width=True):
             st.session_state.character_step = False
