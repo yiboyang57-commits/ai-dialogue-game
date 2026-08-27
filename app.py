@@ -5,7 +5,6 @@
 这里只做界面呈现层：三区布局 + 聊天气泡 + 卡片化世界状态，视觉走简洁白灰 + 单一强调色。
 """
 import html
-import json
 
 import streamlit as st
 
@@ -19,59 +18,104 @@ import dynamics
 import save_bundle
 import world_gen
 
-# ---------------------------------------------------------------- 全局样式
-
-ACCENT = "#4a6cf7"       # 唯一强调色（蓝）
-ACCENT_SOFT = "#eaf1ff"  # 玩家气泡浅蓝
+# ---------------------------------------------------------------- 主题与全局样式
+# 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
+VERSION = "v2.4"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+CHAT_HEIGHT = 480  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
 
-st.markdown(f"""
+st.markdown("""
 <style>
-/* 基础：白/浅灰，去花哨阴影 */
-.stApp {{ background: #fafafa; }}
-.block-container {{ padding-top: 1.2rem; max-width: 1280px; }}
+/* ===== 基础：暖米色背景 + 中文友好字体 ===== */
+html, body, .stApp {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+.stApp { background: #f5efe6; color: #4a4136; }
+/* 顶部留白：避开 Streamlit 顶部工具栏 + iOS 刘海安全区，防止内容被遮挡 */
+.block-container {
+    padding-top: calc(3.4rem + env(safe-area-inset-top, 0px));
+    padding-bottom: 4rem;
+    max-width: 1320px;
+}
+/* Streamlit 顶部工具栏改成暖色实底，滚动时不会透出底下内容 */
+header[data-testid="stHeader"] {
+    background: rgba(245,239,230,.96) !important;
+    border-bottom: 1px solid #e8dcc7;
+    backdrop-filter: blur(6px);
+}
 
-/* 顶部标题栏 */
-.gm-header {{ display:flex; align-items:center; justify-content:space-between;
-    background:#fff; border:1px solid #eee; border-radius:14px; padding:12px 18px; margin-bottom:14px; }}
-.gm-brand {{ font-size:19px; font-weight:700; color:#1f2430; }}
-.gm-icon {{ font-size:22px; margin-right:6px; }}
-.gm-turn {{ font-size:13px; color:#8a8f99; padding-top:6px; text-align:center; }}
+/* ===== 顶栏 ===== */
+.gm-header {
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+    background: linear-gradient(135deg, #fffaf3 0%, #f7ecdd 100%);
+    border:1px solid #e8dcc7; border-radius:16px; padding:14px 20px; margin-bottom:14px;
+    box-shadow: 0 2px 12px rgba(192,105,63,.10);
+}
+.gm-brand { font-size:20px; font-weight:800; color:#4a4136; letter-spacing:.4px; display:flex; align-items:center; }
+.gm-icon { font-size:24px; margin-right:8px; }
+.gm-sub { font-size:13px; color:#9a8e7d; margin-left:10px; font-weight:400; }
+.gm-ver { display:inline-block; font-size:11px; color:#fff; background:#d67c4e; border-radius:999px; padding:2px 10px; margin-left:10px; font-weight:700; }
+.gm-turn { font-size:13px; color:#9a8e7d; }
 
-/* 叙事区 */
-.narrator {{ text-align:left; font-size:16px; line-height:1.75; color:#333; margin:2px 0 16px 0; }}
-.narrator-label {{ font-size:12px; color:#a0a4ae; margin-bottom:2px; }}
-.player-label {{ font-size:12px; color:#a0a4ae; text-align:right; margin-bottom:2px; }}
-.player-row {{ display:flex; justify-content:flex-end; margin:2px 0 16px 0; }}
-.player-bubble {{ background:{ACCENT_SOFT}; border:1px solid #dbe6ff; border-radius:14px;
-    padding:10px 14px; max-width:72%; font-size:15px; line-height:1.6; color:#1f2430; }}
+/* ===== 聊天气泡 ===== */
+.narrator-label { font-size:12px; color:#b8ad9c; margin:0 0 3px 2px; }
+.narrator-bubble { background:#f0e7d6; border:1px solid #e8dcc7; border-radius:14px;
+    padding:11px 15px; max-width:82%; font-size:16px; line-height:1.85; color:#4a4136;
+    margin:2px 0 18px 0; }
+.player-label { font-size:12px; color:#b8ad9c; text-align:right; margin:0 2px 3px 0; }
+.player-row { display:flex; justify-content:flex-end; margin:2px 0 18px 0; }
+.player-bubble { background:#f7e3d3; border:1px solid #eecfb8; border-radius:14px;
+    padding:11px 15px; max-width:72%; font-size:15px; line-height:1.75; color:#5b3a27; }
 
-/* 右侧状态卡片 */
-.gm-panel-top {{ font-size:13px; color:#6b7280; padding:2px 2px 8px 2px; }}
-.gm-card {{ background:#fff; border:1px solid #eceef1; border-radius:12px; padding:14px 16px; margin-bottom:12px; }}
-.gm-card-title {{ font-size:13px; font-weight:700; color:#4b5563; margin-bottom:10px; letter-spacing:.3px; }}
-.char-row {{ display:flex; align-items:flex-start; padding:6px 0; border-bottom:1px solid #f2f3f5; }}
-.char-row:last-child {{ border-bottom:none; }}
-.avatar {{ width:36px; height:36px; border-radius:50%; background:{ACCENT}; color:#fff;
-    display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:600; flex:none; margin-right:10px; }}
-.char-name {{ font-size:14px; font-weight:600; color:#1f2430; }}
-.char-sub {{ font-size:12px; color:#6b7280; margin-top:1px; }}
-.char-loc {{ font-size:12px; color:#9aa0ab; margin-top:2px; }}
-.chip {{ display:inline-block; background:#f3f4f6; border:1px solid #e7e9ed; border-radius:999px;
-    padding:3px 10px; margin:3px 4px 3px 0; font-size:12px; color:#374151; }}
-.bullet {{ font-size:13px; color:#374151; padding:2px 0; }}
-.bullet b {{ color:#1f2430; }}
-.muted {{ font-size:12px; color:#9aa0ab; }}
+/* ===== 右侧状态卡片 ===== */
+.gm-panel-top { font-size:13px; color:#6b5f52; padding:2px 4px 10px 4px; }
+.gm-card { background:#fffaf3; border:1px solid #e8dcc7; border-radius:14px;
+    padding:14px 16px; margin-bottom:12px; box-shadow: 0 1px 6px rgba(192,105,63,.05); }
+.gm-card-title { font-size:13px; font-weight:800; color:#c0693f; margin-bottom:10px; letter-spacing:.5px; }
+.char-row { display:flex; align-items:flex-start; padding:7px 0; border-bottom:1px dashed #eee2d0; }
+.char-row:last-child { border-bottom:none; }
+.avatar { width:36px; height:36px; border-radius:50%; background:#d67c4e; color:#fff;
+    display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700; flex:none; margin-right:10px; }
+.char-name { font-size:14px; font-weight:700; color:#4a4136; }
+.char-sub { font-size:12px; color:#6b5f52; margin-top:1px; line-height:1.5; }
+.char-loc { font-size:12px; color:#9a8e7d; margin-top:2px; }
+.chip { display:inline-block; background:#f6ecdd; border:1px solid #e8dcc7; border-radius:999px;
+    padding:3px 11px; margin:3px 5px 3px 0; font-size:12px; color:#5b3a27; }
+.bullet { font-size:13px; color:#4a4136; padding:2px 0; line-height:1.65; }
+.bullet b { color:#c0693f; font-weight:700; }
+.muted { font-size:12px; color:#9a8e7d; }
 
-/* 输入/按钮 hover·focus 反馈 */
-div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textarea:focus {{
-    border-color:{ACCENT} !important; box-shadow:0 0 0 2px rgba(74,108,247,.15) !important; }}
-div[data-testid="stChatInput"] textarea:focus {{
-    border-color:{ACCENT} !important; box-shadow:0 0 0 2px rgba(74,108,247,.15) !important; }}
-.stButton > button {{ border-radius:10px; }}
-.stButton > button:hover {{ opacity:.9; transform:translateY(-1px); }}
-.stButton > button[kind="primary"] {{ background:{ACCENT}; }}
+/* ===== 输入框 / 按钮 ===== */
+div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea {
+    background:#fffdf8 !important; color:#4a4136 !important;
+    border:1px solid #e8dcc7 !important; border-radius:10px !important;
+}
+div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textarea:focus {
+    border-color:#d67c4e !important; box-shadow:0 0 0 2px rgba(214,124,78,.18) !important;
+}
+div[data-testid="stChatInput"] textarea { border-radius:12px !important; }
+div[data-testid="stChatInput"] textarea:focus { border-color:#d67c4e !important; box-shadow:0 0 0 2px rgba(214,124,78,.18) !important; }
+.stButton > button { border-radius:10px; font-weight:600; }
+.stButton > button:hover { opacity:.92; transform:translateY(-1px); }
+.stButton > button[kind="primary"] { background:#d67c4e; border-color:#d67c4e; color:#fff; }
+.stButton > button[kind="primary"]:hover { background:#c0693f; border-color:#c0693f; color:#fff; }
+
+/* ===== 侧边栏 ===== */
+section[data-testid="stSidebar"] { background:#f3ead9; border-right:1px solid #e8dcc7; }
+section[data-testid="stSidebar"] .stDownloadButton > button { background:#d67c4e; border-color:#d67c4e; color:#fff; border-radius:10px; }
+
+/* ===== 卡片式表单容器（st.container(border=True)）===== */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    border-color:#e8dcc7 !important;
+    border-radius:14px !important;
+    background:#fffaf3;
+}
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:#d9c7ac; border-radius:8px; }
+::-webkit-scrollbar-thumb:hover { background:#c9b291; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,6 +124,22 @@ div[data-testid="stChatInput"] textarea:focus {{
 
 def esc(text):
     return html.escape(str(text)).replace("\n", "<br>")
+
+
+def header_html(turn=None):
+    """统一的顶部标题栏 HTML（含版本号，方便确认云端是否最新）。"""
+    right = ""
+    if turn is not None:
+        right = f'<span class="gm-turn">第 {turn} 回合</span>'
+    return (
+        '<div class="gm-header"><div class="gm-brand">'
+        '<span class="gm-icon">🗡️</span>文字冒险 · Game Master'
+        f'<span class="gm-ver">{VERSION}</span>'
+        '<span class="gm-sub">AI 对话模拟器</span>'
+        '</div>'
+        f'<div style="display:flex;align-items:center;gap:12px;">{right}</div>'
+        '</div>'
+    )
 
 
 def _secrets_api_key():
@@ -135,7 +195,7 @@ def render_log(log):
                         unsafe_allow_html=True)
         else:
             st.markdown('<div class="narrator-label">旁白</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="narrator">{esc(m["content"])}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="narrator-bubble">{esc(m["content"])}</div>', unsafe_allow_html=True)
 
 
 def render_world_panel(game):
@@ -284,6 +344,9 @@ def render_save_sidebar():
                 mime="application/json",
                 use_container_width=True,
             )
+            if st.button("💾 存到服务器", use_container_width=True):
+                game.save()
+                st.toast("已存到服务器（临时，长期请用「导出存档」）")
 
         up = st.file_uploader("⬆ 导入存档", type=["json"], key="import_save")
         if up is not None:
@@ -312,8 +375,13 @@ def render_character_build():
         st.session_state.character_step = False
         st.rerun()
 
-    st.markdown('<div class="gm-header"><div class="gm-brand"><span class="gm-icon">🧑</span>构建主角</div></div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="gm-header"><div class="gm-brand">'
+        '<span class="gm-icon">🧑</span>构建主角'
+        f'<span class="gm-ver">{VERSION}</span>'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
     st.markdown("### 构建主角")
     st.caption("自选天赋、体质与金手指，然后进入故事。")
 
@@ -386,69 +454,69 @@ if "game" not in st.session_state or st.session_state.game is None:
         render_character_build()
         st.stop()
 
-    st.markdown('<div class="gm-header"><div class="gm-brand"><span class="gm-icon">🗡️</span>文字冒险 · Game Master</div></div>',
-                unsafe_allow_html=True)
+    st.markdown(header_html(), unsafe_allow_html=True)
     st.markdown("### 开始新游戏")
     st.caption("选择世界观来源，然后进入故事。")
 
     col_setup, col_preview = st.columns([1, 1])
     with col_setup:
         mode = st.radio("世界观来源", ["手动输入", "AI 生成", "上传文件"], horizontal=True)
+        with st.container(border=True):
+            if mode == "手动输入":
+                bg = st.text_area("世界观 / 背景", height=90)
+                role = st.text_input("你扮演的角色")
+                init = st.text_area("初始情境", height=70)
+                style = st.text_input("主持风格（可留空）")
+                if st.button("开始游戏", type="primary", use_container_width=True):
+                    if not bg and not init:
+                        st.warning("至少填写世界观/背景或初始情境。")
+                    else:
+                        start_build({
+                            "world": {"name": "", "background": bg, "rules": "", "style": style},
+                            "player": {"name": "", "role_description": role, "attributes": {}, "status_effects": []},
+                            "initial_situation": init,
+                            "location": {"name": "", "description": ""}, "time": "",
+                            "characters": {}, "inventory": [], "plot_flags": {}, "current_goal": "",
+                        })
 
-        if mode == "手动输入":
-            bg = st.text_area("世界观 / 背景", height=90)
-            role = st.text_input("你扮演的角色")
-            init = st.text_area("初始情境", height=70)
-            style = st.text_input("主持风格（可留空）")
-            if st.button("开始游戏", type="primary", use_container_width=True):
-                if not bg and not init:
-                    st.warning("至少填写世界观/背景或初始情境。")
-                else:
-                    start_build({
-                        "world": {"name": "", "background": bg, "rules": "", "style": style},
-                        "player": {"name": "", "role_description": role, "attributes": {}, "status_effects": []},
-                        "initial_situation": init,
-                        "location": {"name": "", "description": ""}, "time": "",
-                        "characters": {}, "inventory": [], "plot_flags": {}, "current_goal": "",
-                    })
+            elif mode == "AI 生成":
+                theme = st.text_input("主题 / 类型（可留空）", placeholder="修仙 / 赛博朋克 / 悬疑…")
+                keywords = st.text_input("关键词 / 要求（可留空）")
+                role_hint = st.text_input("想扮演的角色类型（可留空）")
+                if st.button("生成世界观", use_container_width=True):
+                    with st.spinner("正在生成…"):
+                        try:
+                            t = world_gen.generate_world(llm, theme, keywords, role_hint)
+                        except Exception as e:
+                            st.error(str(e))
+                            t = None
+                    if t:
+                        st.session_state.preview = t
 
-        elif mode == "AI 生成":
-            theme = st.text_input("主题 / 类型（可留空）", placeholder="修仙 / 赛博朋克 / 悬疑…")
-            keywords = st.text_input("关键词 / 要求（可留空）")
-            role_hint = st.text_input("想扮演的角色类型（可留空）")
-            if st.button("生成世界观", use_container_width=True):
-                with st.spinner("正在生成…"):
+            else:  # 上传文件
+                up = st.file_uploader("上传 .json / .txt / .md", type=["json", "txt", "md"])
+                if up is not None:
+                    raw = up.read().decode("utf-8")
                     try:
-                        t = world_gen.generate_world(llm, theme, keywords, role_hint)
+                        if up.name.lower().endswith(".json"):
+                            t = world_gen.load_template_from_json_text(raw)
+                        else:
+                            with st.spinner("正在将文本结构化为世界观…"):
+                                t = world_gen.structure_text(llm, raw, "")
+                        st.session_state.preview = t
                     except Exception as e:
                         st.error(str(e))
-                        t = None
-                if t:
-                    st.session_state.preview = t
-
-        else:  # 上传文件
-            up = st.file_uploader("上传 .json / .txt / .md", type=["json", "txt", "md"])
-            if up is not None:
-                raw = up.read().decode("utf-8")
-                try:
-                    if up.name.lower().endswith(".json"):
-                        t = world_gen.load_template_from_json_text(raw)
-                    else:
-                        with st.spinner("正在将文本结构化为世界观…"):
-                            t = world_gen.structure_text(llm, raw, "")
-                    st.session_state.preview = t
-                except Exception as e:
-                    st.error(str(e))
 
     with col_preview:
-        if "preview" in st.session_state:
-            st.markdown("**世界观预览**")
-            st.markdown(st.session_state.preview.get("world", {}).get("background", "（无背景）"))
-            st.markdown("```\n" + world_gen.render_preview(st.session_state.preview) + "\n```")
-            if st.button("采用并开始", type="primary", use_container_width=True):
-                start_build(st.session_state.preview)
-        else:
-            st.caption("生成 / 上传后，这里会显示预览。")
+        with st.container(border=True):
+            if "preview" in st.session_state:
+                st.markdown("**世界观预览**")
+                st.markdown(st.session_state.preview.get("world", {}).get("background", "（无背景）"))
+                st.markdown("```\n" + world_gen.render_preview(st.session_state.preview) + "\n```")
+                if st.button("采用并开始", type="primary", use_container_width=True):
+                    start_build(st.session_state.preview)
+            else:
+                st.caption("生成 / 上传后，这里会显示预览。")
 
     # 读档（按当前存档名隔离）
     save_key = current_save_key()
@@ -469,27 +537,20 @@ game = st.session_state.game
 log = st.session_state.log
 
 # 顶部标题栏
-c1, c2, c3 = st.columns([4.2, 1.2, 1])
-with c1:
-    st.markdown('<div class="gm-header"><div class="gm-brand"><span class="gm-icon">🗡️</span>文字冒险 · Game Master</div></div>',
-                unsafe_allow_html=True)
-with c2:
-    st.markdown(f'<div class="gm-turn">第 {game.state.data["meta"]["turn"]} 回合</div>', unsafe_allow_html=True)
-with c3:
-    if st.button("💾 存档", use_container_width=True):
-        game.save()
-        st.toast("已存档")
+st.markdown(header_html(game.state.data["meta"]["turn"]), unsafe_allow_html=True)
 
 # 主体两栏
 left, right = st.columns([7, 3], gap="large")
 
 with left:
-    render_log(log)
+    # 聊天区：固定高度、内部滚动
+    with st.container(height=CHAT_HEIGHT):
+        render_log(log)
 
-    # 可选行动（显而易见选项，点击即发送）
+    # 可选行动（显而易见选项，点击即发送）—— 固定在滚动区下方，始终可见
     options = game.state.data.get("options") or []
     if options:
-        st.markdown('<div class="gm-card-title" style="margin-top:6px;">可选行动</div>', unsafe_allow_html=True)
+        st.markdown('<div class="gm-card-title" style="margin-top:10px;">可选行动</div>', unsafe_allow_html=True)
         cols = st.columns(len(options))
         for i, o in enumerate(options):
             if cols[i].button(o, use_container_width=True):

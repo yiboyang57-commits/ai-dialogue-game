@@ -1,0 +1,10 @@
+[theme]
+# 暖色浅色主题（与桌面版 gui.py 一致）：陶土橙 + 暖米色
+primaryColor = "#d67c4e"
+backgroundColor = "#f5efe6"
+secondaryBackgroundColor = "#f6ecdd"
+textColor = "#4a4136"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
