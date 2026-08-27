@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.8"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.9"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -535,12 +535,20 @@ def _render_pool_card(cat, item, idx, locked, sel, is_multi, max_sel):
         border_css = style["border"]
         left_css = f"border-left:4px solid {style['fg']};"
 
+    drawback_html = ""
+    if item.get("drawback"):
+        drawback_html = (
+            f'<div style="font-size:11px; color:#c0392b; margin-top:4px;">'
+            f'⚠ 代价：{esc(item.get("drawback"))}</div>'
+        )
+
     st.markdown(
         f'<div style="border:1px solid {border_css}; {left_css} background:{style["bg"]}; '
         f'border-radius:10px; padding:8px 10px; min-height:96px;">'
         f'<div style="font-weight:700; color:{style["fg"]};">{esc(name)}</div>'
         f'<div style="font-size:11px; color:{style["fg"]}; opacity:.85;">等级 · {tier}</div>'
         f'<div style="font-size:12px; color:#6b5f52; margin-top:4px;">{esc(item.get("description") or "")}</div>'
+        f'{drawback_html}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -649,25 +657,27 @@ def render_character_build():
     gf = (custom_gf or "").strip() or st.session_state.get("gf_sel") or "无"
     gf_name = None if gf in ("无", "") else gf
 
-    # 从池子里取等级和描述（用于写入状态）
+    # 从池子里取等级、描述和代价（用于写入状态）
     all_pool_items = pool["talents"] + pool["physiques"] + pool["golden_fingers"]
     name_to_item = {x["name"]: x for x in all_pool_items}
-    tier_map, desc_map = {}, {}
+    tier_map, desc_map, drawback_map = {}, {}, {}
     for n in list(talents) + ([physique] if physique else []) + ([gf_name] if gf_name else []):
         if n and n in name_to_item:
             tier_map[n] = name_to_item[n]["tier"]
             desc_map[n] = name_to_item[n]["description"]
+            drawback_map[n] = name_to_item[n].get("drawback", "")
 
     st.divider()
     st.markdown("**你的选择**")
     st.info(character_builder.summarize_build(talents, physique, gf_name))
-    st.caption("等级颜色：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩；自定义项无固定等级，由主持人按名字发挥。")
+    st.caption("等级颜色：白 < 绿 < 蓝 < 紫 < 金 < 红 < 炫彩；高等级带 ⚠代价；自定义项无固定等级，由主持人按名字发挥。")
 
     c1, c2, _ = st.columns([1, 1, 2])
     with c1:
         if st.button("确认开始", type="primary", use_container_width=True):
             start_game(character_builder.build_player(
-                template, talents, physique, gf_name, descriptions=desc_map, tiers=tier_map))
+                template, talents, physique, gf_name,
+                descriptions=desc_map, tiers=tier_map, drawbacks=drawback_map))
     with c2:
         if st.button("返回世界观", use_container_width=True):
             st.session_state.character_step = False

@@ -97,6 +97,22 @@ def build_system_prompt(state, rules):
             "\n这是主角独有的外挂/优势，叙事时合理体现其作用，但不要无脑碾压、破坏剧情张力与公平性。"
         )
 
+    # 高等级天赋/体质/金手指的代价（负面效果）——必须如实体现
+    drawback_lines = []
+    for t in (d.get("player", {}).get("talents") or []):
+        if isinstance(t, dict) and t.get("drawback"):
+            drawback_lines.append(str(t.get("name")) + "：" + str(t["drawback"]))
+    for key in ("physique", "golden_finger"):
+        x = d.get("player", {}).get(key) or {}
+        if isinstance(x, dict) and x.get("drawback"):
+            drawback_lines.append(str(x.get("name")) + "：" + str(x["drawback"]))
+    if drawback_lines:
+        parts.append(
+            "【主角能力的代价/负面效果——必须在剧情中如实体现，不得忽略】\n" +
+            "\n".join("- " + s for s in drawback_lines) +
+            "\n这些是强大能力的副作用与代价：叙事时要让这些代价真实发生、产生后果，不能只给好处不给坏处。"
+        )
+
     custom = d.get("custom") or {}
     if custom:
         parts.append("【世界自定义设定（玩家上传，请遵循）】\n" + json.dumps(custom, ensure_ascii=False))

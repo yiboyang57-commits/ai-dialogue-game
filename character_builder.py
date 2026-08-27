@@ -153,6 +153,7 @@ _POOL_ITEM_SCHEMA = {
         "name": {"type": "string", "description": "候选名字，贴合世界观题材。"},
         "description": {"type": "string", "description": "一句话效果说明。"},
         "tier": {"type": "string", "enum": TIERS, "description": "等级，白最弱、炫彩最强。"},
+        "drawback": {"type": "string", "description": "金/红/炫彩等高等级项必填的代价或负面效果；低等级可留空。"},
     },
     "required": ["name", "tier"],
 }
@@ -163,25 +164,65 @@ GENERATE_POOL_TOOL = {
         "name": "generate_character_pool",
         "description": (
             "根据给定世界观，生成一批该世界风格的『天赋 / 体质 / 金手指』候选池。"
-            "每个候选含 name、description、tier。"
+            "每个候选含 name、description、tier、drawback（drawback 仅高等级需要）。"
             "要求：名字贴合世界观题材；等级整体服从峰值在蓝色的正态分布"
             "（蓝最多、绿紫次之、白更少、金更少、红很少、炫彩极稀有）；名字强弱与等级一致。"
+            "每个类别都必须保底包含至少 1 个炫彩、2 个红、3 个金，且这些金/红/炫彩项"
+            "都要写 drawback（代价/负面效果），越逆天的能力代价越沉重，避免变成无代价的爽游。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "talents": {"type": "array", "description": "天赋候选，约 40 个。", "items": _POOL_ITEM_SCHEMA},
-                "physiques": {"type": "array", "description": "体质候选，约 18 个。", "items": _POOL_ITEM_SCHEMA},
-                "golden_fingers": {"type": "array", "description": "金手指候选，约 14 个。", "items": _POOL_ITEM_SCHEMA},
+                "talents": {"type": "array", "description": "天赋候选，约 50 个。", "items": _POOL_ITEM_SCHEMA},
+                "physiques": {"type": "array", "description": "体质候选，约 25 个。", "items": _POOL_ITEM_SCHEMA},
+                "golden_fingers": {"type": "array", "description": "金手指候选，约 20 个。", "items": _POOL_ITEM_SCHEMA},
             },
             "required": ["talents", "physiques", "golden_fingers"],
         },
     },
 }
 
+# 每个候选池必须保底的高等级数量
+_POOL_FLOOR = {"炫彩": 1, "红": 2, "金": 3}
+
+# 高等级项若 LLM 漏写代价，兜底补一句通用代价
+_GENERIC_DRAWBACKS = {
+    "金": "强大的能力伴随相应代价，不可无节制使用。",
+    "红": "逆天之力会反噬自身，使用时需付出沉重代价。",
+    "炫彩": "至高之力为天地所忌，伴随难以承受的代价与厄运。",
+}
+
+# 本地兜底的高等级候选（LLM 未满足保底时补足；每个类别都备足 3金+2红+1炫彩）
+_LEGENDARY_SUPPLEMENT = {
+    "talents": [
+        {"name": "天命所归", "description": "气运极盛，处处逢机缘。", "tier": "金", "drawback": "树大招风，易招强敌觊觎。"},
+        {"name": "万法皆通", "description": "任何技艺一看就会、一学就精。", "tier": "金", "drawback": "心魔易生，突破时易走火入魔。"},
+        {"name": "皇极霸世", "description": "统领万物的王者之姿。", "tier": "金", "drawback": "孤家寡人，亲近之人多灾厄。"},
+        {"name": "洞悉天机", "description": "能窥见未来吉凶、料敌先机。", "tier": "红", "drawback": "窥探天机过多，寿元受损、时常头痛欲裂。"},
+        {"name": "一念成魔", "description": "绝境中爆发出恐怖力量。", "tier": "红", "drawback": "爆发后陷入虚弱，甚至短暂失控。"},
+        {"name": "混沌主宰", "description": "近乎全能的先天之力。", "tier": "炫彩", "drawback": "为天道所忌，天劫与厄运如影随形。"},
+    ],
+    "physiques": [
+        {"name": "不灭金身", "description": "肉身近乎不灭。", "tier": "金", "drawback": "行动迟缓，难以施展灵巧的身法。"},
+        {"name": "万象圣体", "description": "兼容万法的宝体。", "tier": "金", "drawback": "修炼资源消耗惊人，寻常机缘难以满足。"},
+        {"name": "天罡战体", "description": "为战而生的强横肉身。", "tier": "金", "drawback": "极易卷入杀伐，难以平静度日。"},
+        {"name": "万古神体", "description": "肉身无双、资质绝顶。", "tier": "红", "drawback": "气血过盛，情绪易怒难控。"},
+        {"name": "九死涅槃体", "description": "濒死时能涅槃重生。", "tier": "红", "drawback": "每次涅槃都要付出记忆或情感为代价。"},
+        {"name": "混沌圣体", "description": "承载万象的至高之躯。", "tier": "炫彩", "drawback": "树大招风，体质反噬时痛不欲生。"},
+    ],
+    "golden_fingers": [
+        {"name": "许愿系统", "description": "可许愿实现愿望。", "tier": "金", "drawback": "每次许愿都要付出等价的代价。"},
+        {"name": "因果律商店", "description": "能用代价换取任何结果。", "tier": "金", "drawback": "标价往往是不可逆之物。"},
+        {"name": "随身洞天", "description": "自成一界的随身空间。", "tier": "金", "drawback": "洞天成长需要吞噬大量资源。"},
+        {"name": "时间回溯", "description": "可回溯时间重来。", "tier": "红", "drawback": "每用一次寿命大减，且可能引发不可预知的蝴蝶效应。"},
+        {"name": "死亡回归", "description": "死亡后能回到过去的关键节点。", "tier": "红", "drawback": "回归会失去部分记忆，且死亡时的痛苦会累积。"},
+        {"name": "万能商店", "description": "能买到任何东西。", "tier": "炫彩", "drawback": "支付的是寿命、灵魂等无法再生之物。"},
+    ],
+}
+
 
 def _normalize_pool(args):
-    """校验并清洗 LLM 返回的候选池，去掉非法条目。"""
+    """校验并清洗 LLM 返回的候选池，去掉非法条目，高等级漏写代价时补通用代价。"""
     out = {"talents": [], "physiques": [], "golden_fingers": []}
     for key in out:
         for it in (args.get(key) or []):
@@ -191,12 +232,39 @@ def _normalize_pool(args):
             if not name:
                 continue
             tier = it.get("tier") if it.get("tier") in TIERS else "蓝"
+            drawback = (it.get("drawback") or "").strip()
+            if not drawback and tier in _GENERIC_DRAWBACKS:
+                drawback = _GENERIC_DRAWBACKS[tier]
             out[key].append({
                 "name": name,
                 "description": (it.get("description") or "").strip(),
                 "tier": tier,
+                "drawback": drawback,
             })
     return out
+
+
+def _ensure_floor(pool):
+    """保证每个候选池至少有 1炫彩/2红/3金；不足则用本地兜底表补足。"""
+    for key in ("talents", "physiques", "golden_fingers"):
+        items = pool.setdefault(key, [])
+        counts = {}
+        for it in items:
+            counts[it.get("tier")] = counts.get(it.get("tier"), 0) + 1
+        for tier, need in _POOL_FLOOR.items():
+            have = counts.get(tier, 0)
+            if have >= need:
+                continue
+            for sup in _LEGENDARY_SUPPLEMENT.get(key, []):
+                if sup["tier"] != tier:
+                    continue
+                if any(x["name"] == sup["name"] for x in items):
+                    continue
+                items.append(dict(sup))
+                have += 1
+                if have >= need:
+                    break
+    return pool
 
 
 _PRESET_TALENT_TIERS = {
@@ -245,14 +313,14 @@ def generate_pool(llm, template):
         )},
     ]
     try:
-        _content, name, args = llm.call_tool(msgs, GENERATE_POOL_TOOL, temperature=0.9)
+        _content, name, args = llm.call_tool(msgs, GENERATE_POOL_TOOL, temperature=0.9, max_tokens=4096)
         if name == "generate_character_pool" and isinstance(args, dict):
             pool = _normalize_pool(args)
             if pool["talents"] or pool["physiques"] or pool["golden_fingers"]:
-                return pool
+                return _ensure_floor(pool)
     except Exception:
         pass
-    return _fallback_pool()
+    return _ensure_floor(_fallback_pool())
 
 
 def sample_hand(pool_items, n=9, locked=None):
@@ -282,7 +350,7 @@ def summarize_build(talent_names_list, physique_name, golden_finger_name):
 
 
 def build_player(template, talent_names_list=None, physique_name=None, golden_finger_name=None,
-                 descriptions=None, tiers=None):
+                 descriptions=None, tiers=None, drawbacks=None):
     """把主角构建选择合并进世界观模板，返回新模板（原模板不被修改）。
 
     - talent_names_list: 自选天赋名列表（0~MAX_TALENTS 个），覆盖模板自带的天赋。
@@ -290,9 +358,11 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     - golden_finger_name: 金手指名（对应 GOLDEN_FINGERS；None/「无」表示不带，或自定义名字）。
     - descriptions: {名字: 描述}，用于给自定义项补一句说明；预设项自动用目录里的描述。
     - tiers: {名字: 等级}，等级会写入条目并影响判定强度。
+    - drawbacks: {名字: 负面效果/代价}，会写入条目并注入系统提示。
     """
     descs = descriptions or {}
     tier_map = tiers or {}
+    drawback_map = drawbacks or {}
     t = copy.deepcopy(template)
     p = t.setdefault("player", {})
     if not isinstance(p, dict):
@@ -304,7 +374,10 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     for name in (talent_names_list or []):
         entry = _find(TALENTS, name)
         desc = entry["description"] if entry else descs.get(name, "")
-        talents.append({"name": name, "description": desc, "tier": tier_map.get(name)})
+        talents.append({
+            "name": name, "description": desc,
+            "tier": tier_map.get(name), "drawback": drawback_map.get(name, ""),
+        })
     p["talents"] = talents
 
     # 体质
@@ -312,7 +385,10 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     physique = _find(PHYSIQUES, physique_name)
     if physique_name:
         pdesc = physique["description"] if physique else descs.get(physique_name, "")
-        p["physique"] = {"name": physique_name, "description": pdesc, "tier": tier_map.get(physique_name)}
+        p["physique"] = {
+            "name": physique_name, "description": pdesc,
+            "tier": tier_map.get(physique_name), "drawback": drawback_map.get(physique_name, ""),
+        }
         if physique:
             # 预设体质才应用属性/战力加成
             attrs = p.get("attributes")
@@ -337,6 +413,9 @@ def build_player(template, talent_names_list=None, physique_name=None, golden_fi
     if golden_finger_name and golden_finger_name != "无":
         gf = _find(GOLDEN_FINGERS, golden_finger_name)
         gdesc = gf["description"] if gf else descs.get(golden_finger_name, "")
-        p["golden_finger"] = {"name": golden_finger_name, "description": gdesc, "tier": tier_map.get(golden_finger_name)}
+        p["golden_finger"] = {
+            "name": golden_finger_name, "description": gdesc,
+            "tier": tier_map.get(golden_finger_name), "drawback": drawback_map.get(golden_finger_name, ""),
+        }
 
     return t
