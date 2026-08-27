@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.11"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.12"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -120,14 +120,6 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-thumb { background:#d9c7ac; border-radius:8px; }
 ::-webkit-scrollbar-thumb:hover { background:#c9b291; }
-
-/* ===== 移动端：卡片网格 3 列 → 2 列，缩短选天赋界面 ===== */
-@media (max-width: 768px) {
-    div[data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
-        min-width: 50% !important; max-width: 50% !important;
-    }
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -742,65 +734,61 @@ if "game" not in st.session_state or st.session_state.game is None:
     st.markdown("### 开始新游戏")
     st.caption("选择世界观来源，然后进入故事。")
 
-    col_setup, col_preview = st.columns([1, 1])
-    with col_setup:
-        mode = st.radio("世界观来源", ["手动输入", "AI 生成", "上传文件"], horizontal=True)
-        with st.container(border=True):
-            if mode == "手动输入":
-                bg = st.text_area("世界观 / 背景", height=90)
-                role = st.text_input("你扮演的角色")
-                init = st.text_area("初始情境", height=70)
-                style = st.text_input("主持风格（可留空）")
-                if st.button("开始游戏", type="primary", use_container_width=True):
-                    if not bg and not init:
-                        st.warning("至少填写世界观/背景或初始情境。")
-                    else:
-                        start_build({
-                            "world": {"name": "", "background": bg, "rules": "", "style": style},
-                            "player": {"name": "", "role_description": role, "attributes": {}, "status_effects": []},
-                            "initial_situation": init,
-                            "location": {"name": "", "description": ""}, "time": "",
-                            "characters": {}, "inventory": [], "plot_flags": {}, "current_goal": "",
-                        })
+    mode = st.radio("世界观来源", ["手动输入", "AI 生成", "上传文件"], horizontal=True)
+    with st.container(border=True):
+        if mode == "手动输入":
+            bg = st.text_area("世界观 / 背景", height=90)
+            role = st.text_input("你扮演的角色")
+            init = st.text_area("初始情境", height=70)
+            style = st.text_input("主持风格（可留空）")
+            if st.button("开始游戏", type="primary", use_container_width=True):
+                if not bg and not init:
+                    st.warning("至少填写世界观/背景或初始情境。")
+                else:
+                    start_build({
+                        "world": {"name": "", "background": bg, "rules": "", "style": style},
+                        "player": {"name": "", "role_description": role, "attributes": {}, "status_effects": []},
+                        "initial_situation": init,
+                        "location": {"name": "", "description": ""}, "time": "",
+                        "characters": {}, "inventory": [], "plot_flags": {}, "current_goal": "",
+                    })
 
-            elif mode == "AI 生成":
-                theme = st.text_input("主题 / 类型（可留空）", placeholder="修仙 / 赛博朋克 / 悬疑…")
-                keywords = st.text_input("关键词 / 要求（可留空）")
-                role_hint = st.text_input("想扮演的角色类型（可留空）")
-                if st.button("生成世界观", use_container_width=True):
-                    with st.spinner("正在生成…"):
-                        try:
-                            t = world_gen.generate_world(llm, theme, keywords, role_hint)
-                        except Exception as e:
-                            st.error(str(e))
-                            t = None
-                    if t:
-                        st.session_state.preview = t
-
-            else:  # 上传文件
-                up = st.file_uploader("上传 .json / .txt / .md", type=["json", "txt", "md"])
-                if up is not None:
-                    raw = up.read().decode("utf-8")
+        elif mode == "AI 生成":
+            theme = st.text_input("主题 / 类型（可留空）", placeholder="修仙 / 赛博朋克 / 悬疑…")
+            keywords = st.text_input("关键词 / 要求（可留空）")
+            role_hint = st.text_input("想扮演的角色类型（可留空）")
+            if st.button("生成世界观", use_container_width=True):
+                with st.spinner("正在生成…"):
                     try:
-                        if up.name.lower().endswith(".json"):
-                            t = world_gen.load_template_from_json_text(raw)
-                        else:
-                            with st.spinner("正在将文本结构化为世界观…"):
-                                t = world_gen.structure_text(llm, raw, "")
-                        st.session_state.preview = t
+                        t = world_gen.generate_world(llm, theme, keywords, role_hint)
                     except Exception as e:
                         st.error(str(e))
+                        t = None
+                if t:
+                    st.session_state.preview = t
 
-    with col_preview:
-        with st.container(border=True):
-            if "preview" in st.session_state:
-                st.markdown("**世界观预览**")
-                st.markdown(st.session_state.preview.get("world", {}).get("background", "（无背景）"))
-                st.markdown("```\n" + world_gen.render_preview(st.session_state.preview) + "\n```")
-                if st.button("采用并开始", type="primary", use_container_width=True):
-                    start_build(st.session_state.preview)
-            else:
-                st.caption("生成 / 上传后，这里会显示预览。")
+        else:  # 上传文件
+            up = st.file_uploader("上传 .json / .txt / .md", type=["json", "txt", "md"])
+            if up is not None:
+                raw = up.read().decode("utf-8")
+                try:
+                    if up.name.lower().endswith(".json"):
+                        t = world_gen.load_template_from_json_text(raw)
+                    else:
+                        with st.spinner("正在将文本结构化为世界观…"):
+                            t = world_gen.structure_text(llm, raw, "")
+                    st.session_state.preview = t
+                except Exception as e:
+                    st.error(str(e))
+
+    # 预览（生成 / 上传后显示在下方，全宽）
+    if "preview" in st.session_state:
+        st.divider()
+        st.markdown("**世界观预览**")
+        st.markdown(st.session_state.preview.get("world", {}).get("background", "（无背景）"))
+        st.markdown("```\n" + world_gen.render_preview(st.session_state.preview) + "\n```")
+        if st.button("采用并开始", type="primary", use_container_width=True):
+            start_build(st.session_state.preview)
 
     st.stop()
 
