@@ -39,16 +39,29 @@ def save_slot_suffix(save_key=""):
 
 
 def list_save_slots():
-    """列出 save/ 目录下已有的存档名（从 state_*.json 推导），不含默认槽。"""
+    """列出 save/ 目录下已有的存档，返回 [{"key","name","updated"}]，不含默认槽。
+
+    key 为文件名后缀（用于读档），name 为存档时填的原始名字（从 meta.save_key 读回）。
+    """
     slots = []
     if not os.path.isdir(SAVE_DIR):
         return slots
     prefix = "state_"
     for fn in sorted(os.listdir(SAVE_DIR)):
         if fn.startswith(prefix) and fn.endswith(".json"):
-            mid = fn[len(prefix):-len(".json")]
-            if mid:
-                slots.append(mid)
+            key = fn[len(prefix):-len(".json")]
+            if not key:
+                continue
+            name, updated = key, ""
+            try:
+                with open(os.path.join(SAVE_DIR, fn), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                meta = data.get("meta") or {}
+                name = meta.get("save_key") or key
+                updated = meta.get("updated_at", "")
+            except (json.JSONDecodeError, OSError):
+                pass
+            slots.append({"key": key, "name": name, "updated": updated})
     return slots
 
 # ---- 记忆与历史压缩参数 ----

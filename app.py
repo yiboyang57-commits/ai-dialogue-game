@@ -5,11 +5,12 @@
 这里只做界面呈现层：三区布局 + 聊天气泡 + 卡片化世界状态，视觉走简洁白灰 + 单一强调色。
 """
 import html
+import random
 
 import streamlit as st
 
-from config import BASE_URL, load_api_key, save_api_key, load_model
-from game import Game, load_game
+from config import BASE_URL, load_api_key, save_api_key, load_model, list_save_slots
+from game import Game
 from llm_client import LLMClient
 from memory import Memory
 from world_state import WorldState
@@ -20,8 +21,8 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.6"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
-CHAT_HEIGHT = 480  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
+VERSION = "v2.7"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
 
@@ -62,6 +63,9 @@ header[data-testid="stHeader"] {
 .narrator-label { font-size:12px; color:#b8ad9c; margin:0 0 3px 2px; }
 .narrator-bubble { background:#f0e7d6; border:1px solid #e8dcc7; border-radius:14px;
     padding:11px 15px; max-width:82%; font-size:16px; line-height:1.85; color:#4a4136;
+    margin:2px 0 18px 0; }
+.thinking-bubble { background:#fbf6ec; border:1px dashed #d9c7ac; border-radius:14px;
+    padding:9px 14px; max-width:82%; font-size:14px; line-height:1.6; color:#9a8e7d; font-style:italic;
     margin:2px 0 18px 0; }
 .player-label { font-size:12px; color:#b8ad9c; text-align:right; margin:0 2px 3px 0; }
 .player-row { display:flex; justify-content:flex-end; margin:2px 0 18px 0; }
@@ -188,11 +192,16 @@ def affinity_label(info, turn):
 
 
 def render_log(log):
-    for m in log:
-        if m["role"] == "player":
+    """渲染消息：新的在上，保证刚发送/刚回复的内容立即可见、无需滚动。"""
+    for m in reversed(log):
+        role = m.get("role")
+        if role == "player":
             st.markdown('<div class="player-label">你</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="player-row"><div class="player-bubble">{esc(m["content"])}</div></div>',
                         unsafe_allow_html=True)
+        elif role == "thinking":
+            st.markdown('<div class="narrator-label">旁白 · 思考中</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="thinking-bubble">{esc(m["content"])}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="narrator-label">旁白</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="narrator-bubble">{esc(m["content"])}</div>', unsafe_allow_html=True)
@@ -287,13 +296,60 @@ def render_world_panel(game):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def current_save_key():
-    """当前玩家的存档名（侧边栏维护），空串=默认槽。"""
-    return (st.session_state.get("save_name") or "").strip()
+# 主持人“思考链”文案（等待模型回复时在旁白气泡里随机展示）
+THINKING_PHRASES = [
+    "正在推演剧情走向…",
+    "正在斟酌角色反应…",
+    "正在编织对白…",
+    "正在铺陈氛围…",
+    "正在权衡因果…",
+    "正在翻找线索…",
+    "正在酝酿转折…",
+    "正在推敲细节…",
+]
+
+
+def random_think():
+    return random.choice(THINKING_PHRASES)
+
+
+def session_slot():
+    """本会话的临时自动存档槽（不同玩家互不覆盖，且不会出现在「继续存档」列表里）。"""
+    if "session_slot" not in st.session_state:
+        st.session_state.session_slot = "临时-" + str(random.randint(100000, 999999))
+    return st.session_state.session_slot
+
+
+def _save_to_named_slot(name):
+    """把当前游戏显式保存到一个命名槽，成功返回 True。"""
+    key = (name or "").strip()
+    if not key:
+        return False
+    game = st.session_state.game
+    game.state.save_key = key
+    game.memory.save_key = key
+    game.save()
+    st.session_state.current_slot = key
+    return True
+
+
+def _load_named_slot(key):
+    """从命名槽读档并切到游戏界面。"""
+    state = WorldState.load(key)
+    if state is None:
+        st.error("该存档不存在或已失效。")
+        return
+    memory = Memory.load(key)
+    game = Game(state, memory, st.session_state.llm)
+    st.session_state.game = game
+    st.session_state.log = [{"role": "narrator", "content": "（已读取存档）\n" + state.to_player_summary()}]
+    st.session_state.current_slot = key
+    st.session_state.character_step = False
+    st.rerun()
 
 
 def load_into_session(state_data, memory_dict, save_key=""):
-    """把世界状态 + 记忆数据装入当前会话并切到游戏界面。"""
+    """把世界状态 + 记忆数据装入当前会话并切到游戏界面（用于导入存档）。"""
     state = WorldState(state_data, save_key=save_key)
     memory = Memory.from_dict(memory_dict, save_key=save_key)
     game = Game(state, memory, st.session_state.llm)
@@ -308,7 +364,7 @@ def load_into_session(state_data, memory_dict, save_key=""):
 
 
 def start_game(template):
-    save_key = current_save_key()
+    save_key = session_slot()
     state = WorldState(save_key=save_key)
     state.apply_template(template)
     game = Game(state, Memory(save_key=save_key), st.session_state.llm)
@@ -318,6 +374,7 @@ def start_game(template):
     st.session_state.game = game
     st.session_state.log = []
     st.session_state.log.append({"role": "narrator", "content": opening})
+    st.session_state.current_slot = None
     st.session_state.pop("preview", None)
     st.session_state.pop("template", None)
     st.session_state.character_step = False
@@ -325,31 +382,45 @@ def start_game(template):
 
 
 def render_save_sidebar():
-    """侧边栏：存档名（多存档隔离）+ 导出/导入存档（跨设备持久化）。"""
+    """侧边栏：显式保存（起名+确认）/ 继续存档列表 / 导出导入。"""
     with st.sidebar:
         st.markdown("### 💾 存档")
-        if "save_name" not in st.session_state:
-            q = st.query_params.get_all("save")
-            st.session_state.save_name = (q[-1] if q else "").strip()
-        st.text_input("存档名（每人填不同名字）", key="save_name")
-        slot = current_save_key()
-        st.caption("当前存档槽：" + (slot or "默认") + "（不同名字互相隔离）")
 
         game = st.session_state.get("game")
+        cur = st.session_state.get("current_slot")
+
+        # 显式保存：点按钮 → 起名 → 确认
+        if game is not None:
+            if not st.session_state.get("saving"):
+                cap = "当前存档：" + (cur or "未命名")
+                st.caption(cap)
+                if st.button("💾 保存游戏", type="primary", use_container_width=True):
+                    st.session_state.saving = True
+                    st.rerun()
+            else:
+                name = st.text_input("给存档起个名字（如 111 / 222）", key="save_name_draft")
+                c1, c2 = st.columns(2)
+                if c1.button("确认保存", type="primary", use_container_width=True):
+                    if _save_to_named_slot(name):
+                        st.session_state.saving = False
+                        st.rerun()
+                    else:
+                        st.warning("名字不能为空")
+                if c2.button("取消", use_container_width=True):
+                    st.session_state.saving = False
+                    st.rerun()
+
+        # 导出 / 导入（跨设备持久化）
         if game is not None:
             data = save_bundle.bundle_json(game.state, game.memory)
             st.download_button(
-                "⬇ 导出存档",
+                "⬇ 导出到设备",
                 data=data.encode("utf-8"),
-                file_name=(slot or "默认") + "_存档.json",
+                file_name="存档_" + (cur or "未命名") + ".json",
                 mime="application/json",
                 use_container_width=True,
             )
-            if st.button("💾 存到服务器", use_container_width=True):
-                game.save()
-                st.toast("已存到服务器（临时，长期请用「导出存档」）")
-
-        up = st.file_uploader("⬆ 导入存档", type=["json"], key="import_save")
+        up = st.file_uploader("⬆ 从设备导入", type=["json"], key="import_save")
         if up is not None:
             try:
                 state_data, memory_dict = save_bundle.load_bundle(up.getvalue())
@@ -357,9 +428,21 @@ def render_save_sidebar():
                 st.error("导入失败：" + str(e))
             else:
                 st.session_state.pop("import_save", None)
-                load_into_session(state_data, memory_dict, slot)
+                load_into_session(state_data, memory_dict, session_slot())
 
-        st.caption("云端磁盘是临时的，建议「导出」存到自己设备，下次「导入」恢复。")
+        # 继续存档：列出所有已命名的存档（排除会话临时槽）
+        st.divider()
+        st.markdown("**继续存档**")
+        slots = [s for s in list_save_slots() if not (s["name"] or s["key"]).startswith("临时-")]
+        if slots:
+            for s in slots:
+                label = s["name"] or s["key"]
+                if st.button("▶ " + label, key="load_" + s["key"], use_container_width=True):
+                    _load_named_slot(s["key"])
+        else:
+            st.caption("暂无已命名的存档")
+
+        st.caption("云端磁盘是临时的，跨设备请用「导出/导入」。")
 
 
 def start_build(template):
@@ -466,11 +549,9 @@ def render_character_build():
 
 
 def handle_input(text):
-    game = st.session_state.game
+    """先立即展示玩家消息，再在下一轮渲染里显示“思考链”并调用模型。"""
     st.session_state.log.append({"role": "player", "content": text})
-    with st.spinner("主持人思考中…"):
-        out = game.run_turn(text)
-    st.session_state.log.append({"role": "narrator", "content": out})
+    st.session_state.pending_input = text
     st.rerun()
 
 
@@ -562,48 +643,49 @@ if "game" not in st.session_state or st.session_state.game is None:
             else:
                 st.caption("生成 / 上传后，这里会显示预览。")
 
-    # 读档（按当前存档名隔离）
-    save_key = current_save_key()
-    if WorldState.load(save_key) is not None:
-        st.divider()
-        label = "继续存档" + ("（" + save_key + "）" if save_key else "")
-        if st.button(label):
-            game = load_game(llm, save_key)
-            st.session_state.game = game
-            st.session_state.log = []
-            st.session_state.log.append({"role": "narrator", "content": "（已读取存档）\n" + game.state.to_player_summary()})
-            st.rerun()
-
     st.stop()
 
 # ============ 游戏中：三区布局 ============
 game = st.session_state.game
 log = st.session_state.log
+pending = st.session_state.get("pending_input")
 
 # 顶部标题栏
 st.markdown(header_html(game.state.data["meta"]["turn"]), unsafe_allow_html=True)
 
-# 主体两栏
+# 待处理输入时，追加一个“思考链”占位气泡（下一轮渲染会先显示它）
+show_log = list(log)
+if pending:
+    show_log.append({"role": "thinking", "content": random_think()})
+
 left, right = st.columns([7, 3], gap="large")
 
 with left:
-    # 聊天区：固定高度、内部滚动
-    with st.container(height=CHAT_HEIGHT):
-        render_log(log)
+    # 聊天卡片：包含输入框 + 可选行动 + 消息，内部独立滚动
+    with st.container(height=CHAT_HEIGHT, border=True):
+        with st.form("chat_form", clear_on_submit=True):
+            user_text = st.text_input("输入行动或对话…", key="chat_input")
+            send = st.form_submit_button("发送", use_container_width=True)
+        if send and user_text and user_text.strip():
+            handle_input(user_text.strip())
 
-    # 可选行动（显而易见选项，点击即发送）—— 固定在滚动区下方，始终可见
-    options = game.state.data.get("options") or []
-    if options:
-        st.markdown('<div class="gm-card-title" style="margin-top:10px;">可选行动</div>', unsafe_allow_html=True)
-        cols = st.columns(len(options))
-        for i, o in enumerate(options):
-            if cols[i].button(o, use_container_width=True):
-                handle_input(o)
+        options = game.state.data.get("options") or []
+        if options and not pending:
+            st.caption("可选行动")
+            for i, o in enumerate(options):
+                if st.button(o, key=f"opt_{game.state.data['meta']['turn']}_{i}", use_container_width=True):
+                    handle_input(o)
+
+        render_log(show_log)
 
 with right:
-    render_world_panel(game)
+    # 右侧世界状态：独立滚动
+    with st.container(height=CHAT_HEIGHT):
+        render_world_panel(game)
 
-# 底部固定输入框（聊天式）
-user = st.chat_input("输入行动或对话…")
-if user:
-    handle_input(user.strip())
+# 处理待处理输入（此刻页面已渲染出玩家消息 + 思考占位，随后才阻塞调用模型）
+if pending:
+    st.session_state.pop("pending_input", None)
+    out = game.run_turn(pending)
+    st.session_state.log.append({"role": "narrator", "content": out})
+    st.rerun()
