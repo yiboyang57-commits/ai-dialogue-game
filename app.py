@@ -21,7 +21,7 @@ import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
 # 暖色浅色主题（与桌面版 gui.py 保持一致）：陶土橙 + 暖米色
-VERSION = "v2.10"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+VERSION = "v2.11"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
 CHAT_HEIGHT = 500  # 聊天区固定高度（像素），内部滚动，输入框/面板保持不动
 
 st.set_page_config(page_title="文字冒险 · Game Master", page_icon="🗡️", layout="wide")
@@ -120,6 +120,14 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-thumb { background:#d9c7ac; border-radius:8px; }
 ::-webkit-scrollbar-thumb:hover { background:#c9b291; }
+
+/* ===== 移动端：卡片网格 3 列 → 2 列，缩短选天赋界面 ===== */
+@media (max-width: 768px) {
+    div[data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        min-width: 50% !important; max-width: 50% !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -535,29 +543,39 @@ def _render_pool_card(cat, item, idx, locked, sel, is_multi, max_sel):
         border_css = style["border"]
         left_css = f"border-left:4px solid {style['fg']};"
 
-    drawback_html = ""
-    if item.get("drawback"):
-        drawback_html = (
-            f'<div style="font-size:11px; color:#c0392b; margin-top:4px;">'
-            f'⚠ 代价：{esc(item.get("drawback"))}</div>'
+    # 代价角标
+    warn_badge = ' <span style="color:#c0392b;">⚠</span>' if item.get("drawback") else ""
+
+    # 描述 + 代价折叠在「详情」里
+    details_html = ""
+    desc = item.get("description") or ""
+    drawback = item.get("drawback") or ""
+    if desc or drawback:
+        body = ""
+        if desc:
+            body += f'<div style="font-size:12px;color:#6b5f52;margin-top:4px;">{esc(desc)}</div>'
+        if drawback:
+            body += f'<div style="font-size:11px;color:#c0392b;margin-top:4px;">⚠ 代价：{esc(drawback)}</div>'
+        details_html = (
+            f'<details style="margin-top:4px;">'
+            f'<summary style="font-size:11px;color:#9a8e7d;cursor:pointer;">详情</summary>{body}</details>'
         )
 
     st.markdown(
         f'<div style="border:1px solid {border_css}; {left_css} background:{style["bg"]}; '
-        f'border-radius:10px; padding:8px 10px; min-height:96px;">'
-        f'<div style="font-weight:700; color:{style["fg"]};">{esc(name)}</div>'
-        f'<div style="font-size:11px; color:{style["fg"]}; opacity:.85;">等级 · {tier}</div>'
-        f'<div style="font-size:12px; color:#6b5f52; margin-top:4px;">{esc(item.get("description") or "")}</div>'
-        f'{drawback_html}'
+        f'border-radius:10px; padding:7px 9px; min-height:52px;">'
+        f'<div style="font-weight:700; color:{style["fg"]};">{esc(name)}{warn_badge}</div>'
+        f'<div style="font-size:11px; color:{style["fg"]}; opacity:.85;">{tier}</div>'
+        f'{details_html}'
         f'</div>',
         unsafe_allow_html=True,
     )
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("🔒已锁" if is_locked else "🔓锁定", key=f"lock_{cat}_{idx}", use_container_width=True):
+        if st.button("🔒" if is_locked else "🔓", key=f"lock_{cat}_{idx}", use_container_width=True):
             _toggle_lock(cat, name)
     with b2:
-        if st.button("✓已选" if is_sel else "选择", key=f"sel_{cat}_{idx}", use_container_width=True):
+        if st.button("✓" if is_sel else "选", key=f"sel_{cat}_{idx}", use_container_width=True):
             _toggle_select(cat, name, is_multi, max_sel)
 
 

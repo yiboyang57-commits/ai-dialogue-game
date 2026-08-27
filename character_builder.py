@@ -192,7 +192,7 @@ GENERATE_POOL_TOOL = {
             "properties": {
                 "talents": {"type": "array", "description": "天赋候选，约 50 个：白约3、绿约5、蓝约9、紫约14、金约13、红约5、炫彩约2。", "items": _POOL_ITEM_SCHEMA},
                 "physiques": {"type": "array", "description": "体质候选，约 25 个：白约2、绿约3、蓝约5、紫约6、金约6、红约2、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
-                "golden_fingers": {"type": "array", "description": "金手指候选，约 20 个：白约1、绿约2、蓝约4、紫约5、金约5、红约2、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
+                "golden_fingers": {"type": "array", "description": "金手指候选，约 30 个：白约2、绿约3、蓝约6、紫约8、金约8、红约3、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
             },
             "required": ["talents", "physiques", "golden_fingers"],
         },
@@ -296,9 +296,32 @@ _PRESET_GF_TIERS = {
     "随身系统": "蓝", "天机推演": "金", "存档读档": "红", "天命气运": "金", "点石成金": "紫",
 }
 
+# 兜底池额外补充的金手指（让金手指候选足够多、roll 有变化）
+_EXTRA_GOLDEN_FINGERS = [
+    {"name": "签到系统", "description": "每日签到得奖励。", "tier": "蓝", "drawback": ""},
+    {"name": "任务指引", "description": "自动提示下一步关键线索。", "tier": "绿", "drawback": ""},
+    {"name": "自动拾取", "description": "自动收集掉落物。", "tier": "蓝", "drawback": ""},
+    {"name": "图鉴鉴定", "description": "记录并鉴定所见之物。", "tier": "蓝", "drawback": ""},
+    {"name": "技能树系统", "description": "自由加点强化能力。", "tier": "紫", "drawback": ""},
+    {"name": "成就系统", "description": "达成成就获得奖励。", "tier": "紫", "drawback": ""},
+    {"name": "灵宠系统", "description": "契约并培养宠物。", "tier": "紫", "drawback": ""},
+    {"name": "交易市场", "description": "跨世界买卖物资。", "tier": "紫", "drawback": "需缴纳高昂手续费。"},
+    {"name": "气运雷达", "description": "感知机缘与危险方位。", "tier": "金", "drawback": "频繁使用会被大能反追踪。"},
+    {"name": "全知图书馆", "description": "查询一切知识与情报。", "tier": "红", "drawback": "过度使用会信息过载、精神崩溃。"},
+    {"name": "重生回档", "description": "死亡后回到过去节点。", "tier": "红", "drawback": "每次回档会失去部分记忆。"},
+    {"name": "创世编辑器", "description": "改写世界底层规则。", "tier": "炫彩", "drawback": "每次改动都引发无法预料的连锁反应。"},
+]
+
 
 def _fallback_pool():
     """LLM 生成失败时，用内置预设凑一个候选池（保底）。"""
+    gfs = [
+        {"name": g["name"], "description": g["description"], "tier": _PRESET_GF_TIERS.get(g["name"], "蓝"), "drawback": ""}
+        for g in GOLDEN_FINGERS if g["name"]
+    ]
+    for extra in _EXTRA_GOLDEN_FINGERS:
+        if not any(x["name"] == extra["name"] for x in gfs):
+            gfs.append(dict(extra))
     return {
         "talents": [
             {"name": t["name"], "description": t["description"], "tier": _PRESET_TALENT_TIERS.get(t["name"], "蓝")}
@@ -308,10 +331,7 @@ def _fallback_pool():
             {"name": p["name"], "description": p["description"], "tier": _PRESET_PHYSIQUE_TIERS.get(p["name"], "蓝")}
             for p in PHYSIQUES
         ],
-        "golden_fingers": [
-            {"name": g["name"], "description": g["description"], "tier": _PRESET_GF_TIERS.get(g["name"], "蓝")}
-            for g in GOLDEN_FINGERS if g["name"]
-        ],
+        "golden_fingers": gfs,
     }
 
 
