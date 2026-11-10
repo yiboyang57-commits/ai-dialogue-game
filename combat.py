@@ -75,6 +75,22 @@ def _damage(attacker_power, defender_power, params):
     return max(int(round(base * mult)), max(1, int(round(base * 0.3))))
 
 
+def win_damage_multiplier(player_power, enemy_power, realm_gap):
+    """胜利时承受的伤害倍率（P0-1）。
+
+    - 我方领先 ≥ 1 个 realm_gap：碾压，不掉血（0）；
+    - 领先 0~1 个 realm_gap：从 0.4 线性衰减到 0；
+    - 势均力敌或对手更强：保持 0.4（赢了也要负伤）。
+    """
+    advantage = player_power - enemy_power
+    gap = max(realm_gap, 1e-6)
+    if advantage >= gap:
+        return 0.0
+    if advantage <= 0:
+        return 0.4
+    return 0.4 * (1.0 - advantage / gap)
+
+
 def resolve(player_power, enemy_power, realm_gap, action, params, player_hp, mods=None):
     """掷骰判定一次战斗/逃跑，返回结构化结果（不含概率数值）。
 
@@ -95,19 +111,25 @@ def resolve(player_power, enemy_power, realm_gap, action, params, player_hp, mod
     else:  # fight
         z = win_logit(pp, enemy_power, realm_gap, params) + (mods.get("win_bonus") or 0)
         if random.random() < _sigmoid(z):
-            dmg = max(1, int(round(_damage(enemy_power, pp, params) * 0.4)))
+            mult = win_damage_multiplier(pp, enemy_power, realm_gap)
+            dmg = int(round(_damage(enemy_power, pp, params) * mult))
             outcome, enemy_defeated = "win", True
         else:
             dmg = _damage(enemy_power, pp, params)
             outcome, enemy_defeated = "lose", False
 
     hp_after = max(0, player_hp - dmg)
+    player_down = hp_after <= 0
+    if outcome == "win":
+        # 胜利永不致死：最差也保留 1 点生命，胜负与生死分离
+        hp_after = max(1, hp_after)
+        player_down = False
     return {
         "outcome": outcome,
         "player_damage": dmg,
         "player_hp_after": hp_after,
         "enemy_defeated": enemy_defeated,
-        "player_down": hp_after <= 0,
+        "player_down": player_down,
     }
 
 

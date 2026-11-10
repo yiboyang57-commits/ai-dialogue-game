@@ -335,7 +335,9 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ```
 - `CURVES`：`realm_gap`（默认，k=1.0, decay=0.30, flee_bonus=0.6, base_damage=20, damage_scale=0.10）
   与 `flat`（decay=0, base_damage=15）。
-- 胜利时玩家只受 `40%` 伤害；逃跑成功无伤。
+- 胜利伤害随优势衰减（`combat.win_damage_multiplier`）：领先 ≥1 个 `realm_gap` 无伤，
+  领先 0~1 个 `realm_gap` 从 `40%` 线性降到 0，势均力敌/对手更强保持 `40%`；逃跑成功无伤。
+- **胜利永不致死**：`outcome == "win"` 时 `hp_after = max(1, ...)`、`player_down = False`（P0-1）。
 - `mods` 由 `game.py` 从天赋/道具算好传入：`power_boost` / `win_bonus` / `flee_bonus` / `flee_guarantee`。
 - **概率数值绝不发给模型**，只发 `gm_brief()` 的定性简报（"胜利/落败/负伤程度：重伤"）。
 - **非致命切磋**：`combat.lethal = false` → 生命耗尽改为 `hp=1` + `["昏迷","失去战斗能力"]`，不死亡。

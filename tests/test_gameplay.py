@@ -211,12 +211,16 @@ class GameplayTests(GameFixture):
         self.assertEqual(game.state.data["last_combat"]["outcome"], "flee_fail")
         self.assertIn("没有该道具", llm.messages[1][-1]["content"])
 
-    def test_death_is_reported_even_on_victory_or_failed_escape(self):
-        for action, value in (("fight", 0), ("flee", 0.999999)):
-            with self.subTest(action=action), patch.object(random, "random", return_value=value):
-                result = combat.resolve(10, 10, 5, action, combat.curve_params("realm_gap"), 1)
-                self.assertTrue(result["player_down"])
-                self.assertIn("已死亡", combat.gm_brief(result, 1))
+    def test_death_is_reported_on_failed_escape_but_never_on_victory(self):
+        # P0-1：胜负与生死解耦——胜利永不致死，但逃跑失败/落败仍会致死
+        with patch.object(random, "random", return_value=0):
+            victory = combat.resolve(10, 10, 5, "fight", combat.curve_params("realm_gap"), 1)
+        self.assertFalse(victory["player_down"])
+        self.assertNotIn("已死亡", combat.gm_brief(victory, 1))
+        with patch.object(random, "random", return_value=0.999999):
+            escape = combat.resolve(10, 10, 5, "flee", combat.curve_params("realm_gap"), 1)
+        self.assertTrue(escape["player_down"])
+        self.assertIn("已死亡", combat.gm_brief(escape, 1))
 
     def test_existing_jade_protection_is_spent_once_and_persists(self):
         combat_request = {"combat": {"enemy_name": "强敌", "enemy_power": 30, "action": "fight"}}
@@ -441,6 +445,41 @@ class GameplayTuningTests(unittest.TestCase):
         summary = state.to_summary()
         self.assertIn("新识", summary)
         self.assertIn("旧人0", summary)
+
+
+class CombatDamageTests(unittest.TestCase):
+    """P0-1：胜利伤害随优势衰减；胜利永不致死。"""
+
+    params = combat.curve_params("realm_gap")
+
+    def _fight(self, player_power, enemy_power, player_hp, roll=0.0):
+        with patch.object(random, "random", return_value=roll):
+            return combat.resolve(player_power, enemy_power, 5, "fight", self.params, player_hp)
+
+    def test_overwhelming_win_takes_no_damage(self):
+        """碾压弱敌不掉血（原 bug：每赢一场固定掉 8 点）。"""
+        result = self._fight(100, 1, 5)
+        self.assertEqual(result["outcome"], "win")
+        self.assertEqual(result["player_damage"], 0)
+        self.assertEqual(result["player_hp_after"], 5)
+        self.assertFalse(result["player_down"])
+
+    def test_evenly_matched_win_leaves_one_hp(self):
+        """势均力敌的惨胜最多打到 1 点生命，不能判死。"""
+        result = self._fight(10, 10, 3)
+        self.assertEqual(result["outcome"], "win")
+        self.assertEqual(result["player_hp_after"], 1)
+        self.assertFalse(result["player_down"])
+
+    def test_win_damage_decays_with_advantage(self):
+        """领先越少伤得越重：0.4 倍线性衰减，领先一个段位即为 0。"""
+        ratio = combat.win_damage_multiplier
+        self.assertEqual(ratio(10, 10, 5), 0.4)           # 势均力敌
+        self.assertGreater(ratio(11, 10, 5), 0.0)         # 小优势仍有伤
+        self.assertLess(ratio(13, 10, 5), ratio(11, 10, 5))
+        self.assertEqual(ratio(15, 10, 5), 0.0)           # 领先一个段位：无伤
+        self.assertEqual(ratio(16, 10, 5), 0.0)
+        self.assertEqual(ratio(10, 20, 5), 0.4)           # 对手更强：负伤
 
 
 class SeasonsTests(GameFixture):
