@@ -246,6 +246,48 @@ class GameplayTests(GameFixture):
         self.assertNotIn("death_protections_used", game.state.data["player"])
         self.assertEqual(game.state.data["player"]["attributes"]["hp"], 5)
 
+    def test_lethal_judgment_spends_jade_protection(self):
+        """P0-3：非战斗判定的致死也走保命能力；用完之后再致命就真的死。"""
+        request = {"judgment": {"type": "action", "subject": "坠崖", "reason": "从千丈崖坠落",
+                                "factors": {f"不利{i}": -3 for i in range(6)},
+                                "failure_consequence": "death"}}
+        llm = Replies(("跳", request), ("你坠了下去。", {}),
+                      ("再跳", request), ("你再次坠了下去。", {}))
+        game = self.game(llm, hp=10)
+        game.state.data["player"]["talents"] = [{"name": "古玉护佑", "description": "抵挡致命一击"}]
+        with patch.object(random, "random", return_value=0.999999):
+            game.run_turn("跳下悬崖")
+            self.assertFalse(game.is_over)
+            self.assertEqual(game.state.data["player"]["attributes"]["hp"], 1)
+            self.assertEqual(game.state.data["player"]["death_protections_used"], {"古玉护佑": 1})
+            game.run_turn("再次跳下悬崖")
+        self.assertTrue(game.is_over)
+
+    def test_certain_failure_ignores_jade_protection(self):
+        """certain_failure 的必死行为没有生还条件，保命能力不生效。"""
+        request = {"judgment": {"type": "action", "subject": "火海", "reason": "跳进致命火海",
+                                "certain_failure": True, "failure_consequence": "death"}}
+        llm = Replies(("跳", request), ("你没能出来。", {}))
+        game = self.game(llm, hp=50)
+        game.state.data["player"]["talents"] = [{"name": "古玉护佑", "description": "抵挡致命一击"}]
+        game.run_turn("跳进火海")
+        self.assertTrue(game.is_over)
+        self.assertEqual(game.state.data["player"].get("death_protections_used") or {}, {})
+
+    def test_injury_judgment_that_empties_hp_spends_jade_protection(self):
+        """P0-3：受伤判定把血扣到 0 时，也算致命一击，先走保命能力。"""
+        request = {"judgment": {"type": "action", "subject": "巨石", "reason": "被巨石砸中",
+                                "factors": {f"不利{i}": -3 for i in range(6)},
+                                "failure_consequence": "injury", "failure_damage": 99999}}
+        llm = Replies(("躲", request), ("巨石砸了下来。", {}))
+        game = self.game(llm, hp=50)
+        game.state.data["player"]["talents"] = [{"name": "古玉护佑", "description": "抵挡致命一击"}]
+        with patch.object(random, "random", return_value=0.999999):
+            game.run_turn("硬接巨石")
+        self.assertFalse(game.is_over)
+        self.assertEqual(game.state.data["player"]["attributes"]["hp"], 1)
+        self.assertEqual(game.state.data["player"]["death_protections_used"], {"古玉护佑": 1})
+
 
 class RobustnessTests(unittest.TestCase):
     """v2.18 审查修复的回归：血量边界、因素正负号、网络异常、格式容错、存档安全。"""

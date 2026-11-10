@@ -323,7 +323,8 @@ p     = sigmoid(logit)          # 钳制到 [0.001, 0.999]
 - **不给保底的情况**（`game.py:310`）：`failure_consequence` 为 `injury` / `death` 时
   `allow_pity=False`；`certain_failure=True` 直接 `return False, 0.0`（不掷骰、不吃保底、天赋救不了）。
 - **保命能力** `DEATH_PROTECTIONS = {"古玉护佑": 1}`。条目可显式带 `death_protection_uses`(1~3)。
-  只在**致命战斗伤害**时由系统消耗；**不能**抵消无保护的坠崖等环境死亡。
+  致命**战斗伤害**与判定致死（`failure_consequence=death`，或 `injury` 把血扣到 0）都会先消耗
+  （P0-3，共用 `game.Game._try_death_protection`）；`certain_failure=true` 的必死行为不触发。
 
 ### `combat.py` —— 战斗判定
 

@@ -250,6 +250,25 @@ class Game:
                 return name
         return None
 
+    def _try_death_protection(self):
+        """致命一击时尝试消耗保命能力（P0-3，战斗与判定共用）。
+
+        有可用能力：消耗一次、把玩家救回 1 点生命、状态改为「重伤 + 能力已消耗」，返回能力名；
+        没有可用能力：返回 None，由调用方 mark_dead。
+        """
+        protection = self._consume_death_protection()
+        if not protection:
+            return None
+        player = self.state.data["player"]
+        player.setdefault("attributes", {})["hp"] = 1
+        player["status_effects"] = ["重伤", protection + "已消耗"]
+        return protection
+
+    @staticmethod
+    def _protection_brief(protection):
+        return (" 已有保命能力【" + protection + "】抵挡本次致命一击；次数已消耗并记录，"
+                "玩家重伤、只保住性命，不能借此自动疗伤、反杀或推进后续剧情。")
+
     # ---- 战斗判定 ----
     def _get_hp(self):
         attrs = self.state.data.get("player", {}).get("attributes") or {}
@@ -296,11 +315,10 @@ class Game:
             result["player_down"] = False
             self.state.data["player"]["status_effects"] = ["昏迷", "失去战斗能力"]
         elif result["player_down"]:
-            protection = self._consume_death_protection()
+            protection = self._try_death_protection()
             if protection:
                 result["player_hp_after"] = 1
                 result["player_down"] = False
-                self.state.data["player"]["status_effects"] = ["重伤", protection + "已消耗"]
         self._apply_combat_result(req, result)
         if result["player_down"]:
             self.state.mark_dead("与" + (req.get("enemy_name") or "敌人") + "的冲突中生命耗尽")
@@ -309,7 +327,7 @@ class Game:
         if nonlethal_down:
             brief += " 这是事先明确的非致命冲突，玩家昏迷、失去战斗能力。停在此处，不擅自跳到苏醒或后续获救。"
         if protection:
-            brief += " 已有保命能力【" + protection + "】抵挡本次致命一击；次数已消耗并记录，玩家重伤、只保住性命，不能借此自动疗伤、反杀或推进后续剧情。"
+            brief += self._protection_brief(protection)
         if use_item and not owns_item:
             brief += " 玩家没有该道具，不能虚构其效果。"
         outcome_text, outcome_update = self._generate_outcome(brief, player_input, text, req)
@@ -373,9 +391,17 @@ class Game:
         )
         brief = judgment_module.judgment_brief(jtype, success, subject)
         hp = self._get_hp()
+        certain = req.get("certain_failure") is True
+        protection = None
         if not success and consequence == "death":
-            self.state.mark_dead(req.get("reason") or subject or "致命行动失败")
-            hp = 0
+            # certain_failure：没有实际生还条件，保命能力不生效（P0-3）
+            if not certain:
+                protection = self._try_death_protection()
+            if protection:
+                hp = 1
+            else:
+                self.state.mark_dead(req.get("reason") or subject or "致命行动失败")
+                hp = 0
         elif not success and consequence == "injury":
             damage = req.get("failure_damage")
             damage = int(damage) if isinstance(damage, (int, float)) else 25
@@ -384,11 +410,20 @@ class Game:
             self.state.data["player"]["attributes"]["hp"] = hp
             brief += " 玩家受到伤害。"
             if hp <= 0:
-                self.state.mark_dead(req.get("reason") or subject or "危险行动中生命耗尽")
+                if not certain:
+                    protection = self._try_death_protection()
+                if protection:
+                    hp = 1
+                else:
+                    self.state.mark_dead(req.get("reason") or subject or "危险行动中生命耗尽")
+        if protection:
+            brief += self._protection_brief(protection)
         if self.state.is_dead:
             brief += " 玩家已死亡，本次人生已结束；不得改成昏迷、获救、觉醒或复活，options必须为空。"
-        if req.get("certain_failure") is True:
+        if certain:
             brief += " 此行动依照已有条件确定无法安全完成，没有随机翻盘或保底。"
+            if self.state.is_dead and consequence in ("death", "injury"):
+                brief += " 该行动没有实际生还条件，保命能力也无法抵挡。"
         if use_item and not owns_item:
             brief += " 玩家没有该道具，不能虚构其效果。"
 
