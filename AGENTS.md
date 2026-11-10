@@ -44,7 +44,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**91 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**97 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -118,7 +118,7 @@
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
 | `game.py` | 664 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 789 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `world_state.py` | 800 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
 | `app.py` | 1425 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
 | `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
@@ -366,12 +366,13 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 91 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 97 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
    `hp`、`attribute_events[].attribute=="hp"`、`characters[].affinity|met_turn`；
-   `player_power` 单次变化 ≤ ±1 个 `realm_gap`，`max_hp` 单轮 ≤ 0.5×~1.5×（P0-2）。
+   `player_power` 单次变化 ≤ ±1 个 `realm_gap`，`max_hp` 单轮 ≤ 0.5×~1.5×（P0-2），
+   且不超过 `world_state.MAX_HP_CEILING`（绝对安全上限）；hp 只接受有限数字（字符串/NaN/负数被丢弃或归零）。
 4. **失败要可回滚。** 新的结算副作用（扣血、扣道具、扣保底）必须发生在 `_play_turn` 的快照与
    `save()` 之间，保证第二次 API 调用失败时能干净撤销。
 5. **去数据化。** 玩家可见的文字（叙事 / `to_player_summary()`）**不得出现** hp、战力、好感度、概率、伤害数值。
@@ -486,7 +487,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 91 passed，再动手。
+1. **先跑基线测试**（§1），确认 97 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -501,7 +502,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，91 passed）
+# 全量测试（唯一可靠命令，97 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动

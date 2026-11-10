@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import combat
+import dynamics
 import judgment
 import memory
 import prompts
@@ -240,6 +241,16 @@ class GameplayTests(GameFixture):
         with self.assertRaises(LLMError):
             game.run_turn("尝试潜入")
         self.assertEqual(game.state.data["pity"], {})
+
+    def test_failed_second_call_rolls_back_days_passed(self):
+        """P1-11 的日历推进发生在提交阶段，第二次调用失败时不能被留下。"""
+        llm = Replies(("迎战", {"combat": {"enemy_name": "强敌", "enemy_power": 20, "action": "fight"},
+                                "days_passed": 5}), LLMError("模拟网络失败"))
+        game = self.game(llm)
+        with patch.object(random, "random", return_value=0.999999):
+            with self.assertRaises(LLMError):
+                game.run_turn("追了两天路再迎战")
+        self.assertEqual(game.state.data["calendar"]["days"], 0)
 
     def test_missing_tool_update_does_not_save_unreliable_narrative(self):
         game = self.game(Replies(("获胜了", None), ("还是没有工具", None)))
@@ -724,6 +735,63 @@ class GameplayAuthorityTests(GameFixture):
         self.assertEqual(small["player_damage"], 20)          # 20% × 100
         self.assertEqual(big["player_damage"], 40)            # 20% × 200
 
+    def test_junk_hp_values_are_rejected(self):
+        """验证补丁：hp 是系统独占字段，字符串/布尔/NaN 不能写进状态。"""
+        state = self._fresh()
+        for junk in ("hp", "", True, None, float("nan"), float("inf"), [1], {"x": 1}):
+            with self.subTest(junk=junk):
+                world_state.apply_update(state, {"player_attributes": {"hp": junk}})
+                hp = state.data["player"]["attributes"]["hp"]
+                self.assertIsInstance(hp, (int, float))
+                self.assertGreaterEqual(hp, 0)
+        world_state.apply_update(state, {"player_attributes": {"hp": -50}})
+        self.assertEqual(state.data["player"]["attributes"]["hp"], 0)
+
+    def test_max_hp_has_absolute_ceiling(self):
+        """验证补丁：每轮 ×1.5 的成长不能把生命上限滚成天文数字。"""
+        state = self._fresh()
+        for _ in range(100):
+            world_state.apply_update(state, {"player_attributes": {"max_hp": 10 ** 9}})
+        self.assertLessEqual(state.data["player"]["attributes"]["max_hp"], world_state.MAX_HP_CEILING)
+
+    def test_inventory_ignores_non_string_names(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"inventory_add": [{"name": 7, "quantity": 1},
+                                                           {"name": "", "quantity": 1},
+                                                           {"name": "灵石", "quantity": 2}]})
+        names = [i.get("name") for i in state.data["inventory"]]
+        self.assertEqual(names, ["灵石"])
+
+    def test_apply_update_junk_fuzz_keeps_invariants(self):
+        """固定种子的轻量模糊测试：畸形增量不能破坏任何系统不变量。"""
+        rnd = random.Random(20261110)
+        junk = [None, True, False, 0, -1, 1e9, float("inf"), float("nan"), "999", "", "hp", [], {}]
+        state = self._fresh()
+        for _ in range(300):
+            update = {
+                "player_attributes": {rnd.choice(["hp", "max_hp", "运气"]): rnd.choice(junk)
+                                      for _ in range(rnd.randint(1, 2))},
+                "player_power": rnd.choice(junk),
+                "characters": {"甲": {"affinity": rnd.choice(junk), "met_turn": rnd.choice(junk)}},
+                "inventory_add": [{"name": rnd.choice(["灵石", 7]), "quantity": rnd.choice(junk)}],
+                "relationship_events": [{"subject": "甲", "event": rnd.choice(list(dynamics.RELATION_EVENTS))}
+                                        for _ in range(rnd.randint(0, 4))],
+            }
+            world_state.apply_update(state, update)
+            attrs = state.data["player"]["attributes"]
+            hp, max_hp = attrs.get("hp"), attrs.get("max_hp")
+            self.assertIsInstance(hp, (int, float))
+            self.assertIsInstance(max_hp, (int, float))
+            self.assertLessEqual(hp, max_hp)
+            self.assertGreaterEqual(hp, 0)
+            self.assertLessEqual(max_hp, world_state.MAX_HP_CEILING)
+            self.assertTrue(0 <= state.data["characters"]["甲"]["affinity"] <= 100)
+            self.assertIsInstance(state.data["characters"]["甲"]["met_turn"], int)
+            self.assertGreater(state.data["combat"]["player_power"], 0)
+            for item in state.data["inventory"]:
+                self.assertIsInstance(item.get("name"), str)
+                self.assertGreater(item.get("quantity"), 0)
+
 
 class CombatDamageTests(unittest.TestCase):
     """P0-1：胜利伤害随优势衰减；胜利永不致死。"""
@@ -885,6 +953,18 @@ class SeasonsTests(GameFixture):
         game.run_turn("等待")
         self.assertEqual(game.state.data["calendar"]["days"], 365)
         self.assertEqual(game.state.data["player"]["attributes"]["年龄"], 21)
+
+    def test_failed_block_narrative_rolls_back_calendar(self):
+        """岁月模式先推进日历再让模型叙述：叙述失败时整轮回滚，日历与回合数不变。"""
+        fixed = {"planned": 30, "elapsed": 30, "remaining": 0, "seclusion": True,
+                 "flavors": [], "interrupt": None}
+        llm = Replies(LLMError("模拟网络失败"))
+        game = self.game(llm)
+        with patch.object(seasons, "roll_block", return_value=fixed):
+            with self.assertRaises(LLMError):
+                game.run_block("闭关一月", 30, seclusion=True)
+        self.assertEqual(game.state.data["calendar"]["days"], 0)
+        self.assertEqual(game.state.data["meta"]["turn"], 0)
 
 
 if __name__ == "__main__":

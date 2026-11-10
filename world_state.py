@@ -14,6 +14,7 @@ from judgment import death_protection_limits, ITEM_MODIFIERS
 
 MAX_OFFSCREEN = 10         # 幕后进展最多保留条数（玩家看不到原文，只列给模型）
 RELATION_MAX_DELTA = 30    # P1-10：单轮对同一对象的好感变化上限
+MAX_HP_CEILING = 100000    # 生命上限的绝对安全上限（正常玩法远达不到，只防每轮 ×1.5 滚雪球）
 
 
 class WorldState:
@@ -616,13 +617,21 @@ def apply_update(state, update, power_cap=None):
 
     if isinstance(update.get("player_attributes"), dict):
         incoming = dict(update["player_attributes"])
+        # hp 是系统独占字段：只接受有限数字，字符串/布尔/NaN/负数一律丢弃或归零
+        if "hp" in incoming:
+            if _is_finite_number(incoming["hp"]):
+                incoming["hp"] = _clean_number(max(0, incoming["hp"]))
+            else:
+                incoming.pop("hp")
         if "max_hp" in incoming:
-            # 生命上限是系统独占字段：单轮只能在原值的 0.5×~1.5× 之间变动（P0-2）
+            # 生命上限是系统独占字段：单轮只能在原值的 0.5×~1.5× 之间变动（P0-2），
+            # 并受绝对安全上限约束，避免「每轮 ×1.5」长期滚成天文数字。
             cur_max = attrs.get("max_hp")
             cur_max = cur_max if _is_finite_number(cur_max) and cur_max >= 1 else 100
             new_max = incoming["max_hp"]
             if _is_finite_number(new_max) and new_max >= 1:
-                incoming["max_hp"] = _clean_number(min(max(new_max, cur_max * 0.5), cur_max * 1.5))
+                clamped = min(max(new_max, cur_max * 0.5), cur_max * 1.5)
+                incoming["max_hp"] = _clean_number(min(clamped, MAX_HP_CEILING))
             else:
                 incoming.pop("max_hp")
         attrs.update(incoming)
@@ -654,7 +663,7 @@ def apply_update(state, update, power_cap=None):
     # 背包：新增按名字累加数量
     for raw in update.get("inventory_add") or []:
         item = _as_item(raw)
-        if not item or not item.get("name"):
+        if not item or not isinstance(item.get("name"), str) or not item["name"].strip():
             continue
         name = item["name"]
         qty = max(1, safe_int(item.get("quantity"), 1) or 1)
@@ -671,7 +680,7 @@ def apply_update(state, update, power_cap=None):
     # 背包：按数量扣减（支持货币）；remove_all 才整类移除
     for raw in update.get("inventory_remove") or []:
         item = _as_item(raw)  # 容错：裸字符串只扣 1，绝不整类删
-        if not item or not item.get("name"):
+        if not item or not isinstance(item.get("name"), str) or not item["name"].strip():
             continue
         name = item["name"]
         remove_all = item.get("remove_all") is True
