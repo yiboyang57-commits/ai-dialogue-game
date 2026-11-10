@@ -244,6 +244,32 @@ UNKNOWN_FACTOR_CAP = 1.5   # P1-5：未知因素（模型自造名字）的合�
 FACTOR_TOTAL_CAP = 6.0     # P1-5：全部因素贡献的合计上限（logit）
 PITY_BONUS_MAX = 3.0       # P1-7：连续失败的渐进保底加成上限（logit）
 
+# ---- P2-19：有对应玩家属性的因素，由代码按属性值换算并覆盖模型声明 ----
+# 属性来源是 state.player.attributes（由 attribute_events 维护，如「福缘提升」+8、「魅力大增」+10）。
+# 目前只接两张最有意义的映射：寻宝靠福缘、说服靠魅力。想扩展就在这里加。
+ATTRIBUTE_FACTOR_LINKS = {
+    "treasure": {"福缘/运气": "福缘"},
+    "persuasion": {"口才/魅力": "魅力"},
+}
+ATTRIBUTE_FACTOR_SCALE = 10.0  # 每 10 点属性 ≈ ±1 因素值，最终钳制到 -3~+3
+
+
+def attribute_factor(value, scale=ATTRIBUTE_FACTOR_SCALE):
+    """把属性数值换算成因素值（-3~+3）。缺失/文字/NaN/inf 一律按 0（普通人水准）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number):
+        return 0
+    return max(-3, min(3, int(round(number / max(scale, 1e-9)))))
+
+
+def same_factor(name, other):
+    """两个因素名归一化后是否相同（忽略 /、空格等，并走别名表）。"""
+    norm = lambda x: _factor_key(FACTOR_ALIASES.get(str(x).strip(), str(x).strip()))
+    return norm(name) == norm(other)
+
 
 def _factor_key(name):
     """因素名归一化：去掉 / ／ 、 空格，便于「福缘运气」匹配「福缘/运气」。"""

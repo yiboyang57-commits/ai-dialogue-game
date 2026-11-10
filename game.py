@@ -480,6 +480,15 @@ class Game:
             if not im.get("consumable") and im.get(jtype):
                 item_bonus += im[jtype]
 
+        # P2-19：有对应玩家属性的因素（寻宝←福缘、说服←魅力）由代码按属性值换算并覆盖模型填写，
+        # 模型用别名/近似写法（如「福缘运气」）填的同义因素也一并覆盖。
+        attrs = self.state.data.get("player", {}).get("attributes") or {}
+        for factor_name, attr_name in judgment_module.ATTRIBUTE_FACTOR_LINKS.get(jtype, {}).items():
+            score = judgment_module.attribute_factor(attrs.get(attr_name))
+            for key in [k for k in factors if judgment_module.same_factor(k, factor_name)]:
+                factors.pop(key, None)
+            factors[factor_name] = score
+
         pity = self.state.data.setdefault("pity", {}).setdefault(jtype, {"fails": 0, "successes": 0})
         consequence = req.get("failure_consequence") or "setback"
         success, _p = judgment_module.resolve_judgment(

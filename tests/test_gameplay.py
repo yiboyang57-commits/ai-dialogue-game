@@ -729,6 +729,78 @@ class JudgmentIntegrityTests(unittest.TestCase):
         self.assertLessEqual(p, judgment._sigmoid(judgment.FACTOR_TOTAL_CAP) + 1e-9)
 
 
+class AttributeFactorTests(GameFixture):
+    """P2-19：有对应玩家属性的判定因素由代码换算并覆盖模型填写。"""
+
+    def _capture_judgment(self, game, request, draft, outcome):
+        captured = {}
+        real = judgment.resolve_judgment
+
+        def spy(jtype, factors, talents, item_bonus, pity, allow_pity=True, certain_failure=False):
+            captured[jtype] = dict(factors)
+            return real(jtype, factors, talents, item_bonus, pity,
+                        allow_pity=allow_pity, certain_failure=certain_failure)
+
+        game.llm = Replies((draft, request), (outcome, {}))
+        with patch.object(judgment, "resolve_judgment", side_effect=spy), \
+                patch.object(random, "random", return_value=0.999999):
+            game.run_turn("尝试")
+        return captured
+
+    def test_attribute_factor_conversion(self):
+        cases = [(None, 0), ("文字", 0), (0, 0), (8, 1), (-8, -1), (30, 3), (100, 3),
+                 (float("inf"), 0), (float("nan"), 0)]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(judgment.attribute_factor(value), expected)
+
+    def test_treasure_factor_comes_from_fuyuan(self):
+        game = self.game(Replies(), hp=100)
+        game.state.data["player"]["attributes"]["福缘"] = 30
+        captured = self._capture_judgment(
+            game,
+            {"judgment": {"type": "treasure", "subject": "山洞", "factors": {"福缘/运气": -3}}},
+            "寻宝。", "没找到。")
+        self.assertEqual(captured["treasure"]["福缘/运气"], 3)
+
+    def test_alias_factor_key_is_replaced(self):
+        game = self.game(Replies(), hp=100)
+        game.state.data["player"]["attributes"]["福缘"] = 10
+        captured = self._capture_judgment(
+            game,
+            {"judgment": {"type": "treasure", "subject": "山洞", "factors": {"福缘运气": -3}}},
+            "寻宝。", "没找到。")
+        factors = captured["treasure"]
+        self.assertEqual(factors["福缘/运气"], 1)
+        self.assertNotIn("福缘运气", factors)
+
+    def test_persuasion_factor_comes_from_charm(self):
+        game = self.game(Replies(), hp=100)
+        game.state.data["player"]["attributes"]["魅力"] = -20
+        captured = self._capture_judgment(
+            game,
+            {"judgment": {"type": "persuasion", "subject": "路人", "factors": {"口才/魅力": 3}}},
+            "劝说。", "对方摇头。")
+        self.assertEqual(captured["persuasion"]["口才/魅力"], -2)
+
+    def test_missing_attribute_is_neutral(self):
+        game = self.game(Replies(), hp=100)
+        captured = self._capture_judgment(
+            game,
+            {"judgment": {"type": "treasure", "subject": "山洞", "factors": {"福缘/运气": 3}}},
+            "寻宝。", "没找到。")
+        self.assertEqual(captured["treasure"]["福缘/运气"], 0)
+
+    def test_other_types_are_not_touched(self):
+        game = self.game(Replies(), hp=100)
+        game.state.data["player"]["attributes"]["福缘"] = 30
+        captured = self._capture_judgment(
+            game,
+            {"judgment": {"type": "insight", "subject": "谜题", "factors": {"智力/洞察": -3}}},
+            "思考。", "没想通。")
+        self.assertEqual(captured["insight"]["智力/洞察"], -3)
+
+
 class SummaryTruncationTests(unittest.TestCase):
     """P1-9：摘要截断时保留最新内容，特殊道具永远可见。"""
 
