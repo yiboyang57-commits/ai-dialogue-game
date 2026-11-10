@@ -1363,6 +1363,47 @@ class StorageSQLiteTests(unittest.TestCase):
             self.assertEqual(db.entity_profile("阿鸢")["name"], "陆青鸢")
             self.assertEqual(db.entity_profile("青鸢")["name"], "陆青鸢")
 
+    def test_disappearing_facts_and_same_named_entities(self):
+        st = self._state()
+        st.data["characters"] = {"青山": {"status": "受伤", "location": "青山"}, "路人": {"status": "安好"}}
+        st.data["location"] = {"name": "青山", "description": "山峰"}
+        st.data["inventory"] = [{"name": "药丸", "quantity": 1}]
+        st.data["plot_flags"] = {"约定": True}
+        before = copy.deepcopy(st.data)
+        st.data["characters"]["青山"]["status"] = ""
+        del st.data["characters"]["路人"]
+        st.data["inventory"] = []
+        st.data["plot_flags"] = {}
+        with storage.SaveDB(config.db_path_for("")) as db:
+            db.record_turn(12, "action", "青山吃掉药丸。", state_before=before, state=st.data)
+            item = db.entity_profile("药丸", kind="item")
+            self.assertEqual([f["value"] for f in item["facts"] if f["valid_to_turn"] is None], ["0"])
+            for name, attr in [("青山", "状态"), ("路人", "状态"), ("约定", "值")]:
+                facts = db.entity_profile(name)["facts"]
+                self.assertFalse(any(f["attribute"] == attr and f["valid_to_turn"] is None for f in facts))
+            self.assertEqual(db.entity_profile("青山", "location")["kind"], "location")
+            self.assertEqual(db.entity_profile("青山", "character")["kind"], "character")
+            self.assertEqual(db.conn.execute("SELECT COUNT(*) FROM facts WHERE valid_to_turn < valid_from_turn").fetchone()[0], 0)
+
+    def test_v3_entity_unique_migration_preserves_links(self):
+        import sqlite3
+        path = config.db_path_for("")
+        conn = sqlite3.connect(path)
+        conn.executescript(storage.SCHEMA.replace("name TEXT NOT NULL,", "name TEXT NOT NULL UNIQUE,").replace(
+            "last_turn_id INTEGER,\n  UNIQUE(kind, name)", "last_turn_id INTEGER"))
+        conn.execute("INSERT INTO entities(id,kind,name) VALUES(7,'character','青山')")
+        conn.execute("INSERT INTO aliases(alias,entity_id) VALUES('阿山',7)")
+        conn.execute("INSERT INTO facts(entity_id,attribute,value,valid_from_turn,valid_to_turn) VALUES(7,'状态','好',12,11)")
+        conn.commit()
+        conn.close()
+        with storage.SaveDB(path) as db:
+            self.assertEqual(db.entity_profile("阿山")["name"], "青山")
+            self.assertEqual(db.get_meta("schema_version"), "4")
+            self.assertNotEqual(db._entity_id("location", "青山", 1), 7)
+            self.assertEqual(db.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+            fact = db.entity_profile("阿山")["facts"][0]
+            self.assertLessEqual(fact["valid_from_turn"], fact["valid_to_turn"])
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},

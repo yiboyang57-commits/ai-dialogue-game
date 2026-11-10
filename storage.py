@@ -28,7 +28,7 @@ RECALL_IMPORTANCE_WEIGHT = 0.5
 RECALL_RECENCY_WEIGHT = 0.1
 RECALL_DECAY = 0.98
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SNAPSHOT_EVERY_TURNS = 10   # 每 N 回合写一份完整状态快照
 
 SCHEMA = """
@@ -68,9 +68,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,                      -- character / location / item / plot
-  name TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
   first_turn_id INTEGER,
-  last_turn_id INTEGER
+  last_turn_id INTEGER,
+  UNIQUE(kind, name)
 );
 CREATE TABLE IF NOT EXISTS aliases (
   alias TEXT PRIMARY KEY,
@@ -155,6 +156,28 @@ class SaveDB:
 
     def _migrate_schema(self):
         """老库升级：补 summary 列；FTS 旧版只有两列时重建并回填。"""
+        # 旧版 name 全局唯一；重建实体表，保留 id，让事实/提及/别名外键原样有效。
+        unique_columns = []
+        for index in self.conn.execute("PRAGMA index_list(entities)"):
+            if index["unique"]:
+                unique_columns.append([r["name"] for r in self.conn.execute(
+                    'PRAGMA index_info("' + index["name"].replace('"', '""') + '")')])
+        if ["name"] in unique_columns:
+            self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                with self.conn:
+                    self.conn.execute("CREATE TABLE entities_v4 (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                      "kind TEXT NOT NULL, name TEXT NOT NULL, first_turn_id INTEGER, "
+                                      "last_turn_id INTEGER, UNIQUE(kind,name))")
+                    self.conn.execute("INSERT INTO entities_v4 SELECT id,kind,name,first_turn_id,last_turn_id FROM entities")
+                    self.conn.execute("DROP TABLE entities")
+                    self.conn.execute("ALTER TABLE entities_v4 RENAME TO entities")
+            finally:
+                self.conn.execute("PRAGMA foreign_keys=ON")
+        # 修正旧库曾写出的反向有效期，不能把无效区间继续传播到召回。
+        self.conn.execute("UPDATE facts SET valid_from_turn=valid_to_turn "
+                          "WHERE valid_to_turn < valid_from_turn")
         alias_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(aliases)")}
         if "source" not in alias_cols:
             self.conn.execute("ALTER TABLE aliases ADD COLUMN source TEXT NOT NULL DEFAULT 'declared'")
@@ -265,7 +288,7 @@ class SaveDB:
         name = str(name or "").strip()
         if not name:
             return None
-        row = self.conn.execute("SELECT id FROM entities WHERE name=?", (name,)).fetchone()
+        row = self.conn.execute("SELECT id FROM entities WHERE kind=? AND name=?", (kind, name,)).fetchone()
         if row:
             self.conn.execute(
                 "UPDATE entities SET last_turn_id=? WHERE id=? AND (last_turn_id IS NULL OR last_turn_id < ?)",
@@ -287,13 +310,18 @@ class SaveDB:
         if entity_id is None:
             return
         current = self._facts_of(entity_id)
+        wanted = {k: v for k, v in wanted.items() if v is not None and str(v).strip()}
+        for attr in current.keys() - wanted.keys():
+            self.conn.execute("UPDATE facts SET valid_to_turn=MAX(valid_from_turn, ?) "
+                              "WHERE entity_id=? AND attribute=? AND valid_to_turn IS NULL",
+                              (turn_no, entity_id, attr))
         for attr, value in wanted.items():
             value = str(value)
             if current.get(attr) == value:
                 continue
             if attr in current:
                 self.conn.execute(
-                    "UPDATE facts SET valid_to_turn=? WHERE entity_id=? AND attribute=? "
+                    "UPDATE facts SET valid_to_turn=MAX(valid_from_turn, ?) WHERE entity_id=? AND attribute=? "
                     "AND valid_to_turn IS NULL", (turn_no - 1, entity_id, attr))
             self.conn.execute(
                 "INSERT INTO facts(entity_id, attribute, value, valid_from_turn, valid_to_turn, source_turn_id) "
@@ -383,8 +411,19 @@ class SaveDB:
         before = before if isinstance(before, dict) else None
         after = after if isinstance(after, dict) else {}
         if before:
-            self._apply_state_entities(turn_id, turn_no, before)
+            self._apply_state_entities(turn_id, max(0, turn_no - 1), before)
         self._apply_state_entities(turn_id, turn_no, after)
+        # 整个实体离开状态时也要封口；地点离开视野不等于地点本身消失。
+        for kind, old, new in (
+                ("character", (before or {}).get("characters") or {}, after.get("characters") or {}),
+                ("plot", (before or {}).get("plot_flags") or {}, after.get("plot_flags") or {}),
+                ("item", {i["name"]: i for i in (before or {}).get("inventory", []) if isinstance(i, dict) and i.get("name")},
+                 {i["name"]: i for i in after.get("inventory", []) if isinstance(i, dict) and i.get("name")})):
+            for name in old.keys() - new.keys():
+                eid = self._entity_id(kind, name, turn_id)
+                self._set_facts(eid, turn_id, turn_no, {})
+                if kind == "item":
+                    self._set_facts(eid, turn_id, turn_no, {"持有": 0})
         self._sync_aliases(after)
         # 提及：叙事里按已知名字精确匹配；在场/被行动对象优先于仅提及
         if not isinstance(after, dict):
@@ -411,17 +450,18 @@ class SaveDB:
                 self._add_mention(turn_id, self._entity_id("item", item["name"], turn_id), "mentioned")
 
     # ---- 检索（路线图 §2.5 第一层 + 全文兜底） ----
-    def entity_profile(self, name):
+    def entity_profile(self, name, kind=None):
         """某人/某地/某物的当前事实 + 历史变化 + 最近出场回合。"""
         name = str(name or "").strip()
         if not name:
             return None
-        row = self.conn.execute("SELECT id, kind, name, first_turn_id, last_turn_id FROM entities WHERE name=?",
-                                (name,)).fetchone()
+        row = self.conn.execute("SELECT id, kind, name, first_turn_id, last_turn_id FROM entities "
+                                "WHERE name=? AND (? IS NULL OR kind=?) ORDER BY id LIMIT 1",
+                                (name, kind, kind)).fetchone()
         if not row:
             row = self.conn.execute(
                 "SELECT e.id, e.kind, e.name, e.first_turn_id, e.last_turn_id FROM entities e "
-                "JOIN aliases a ON a.entity_id=e.id WHERE a.alias=?", (name,)).fetchone()
+                "JOIN aliases a ON a.entity_id=e.id WHERE a.alias=? AND (? IS NULL OR e.kind=?)", (name, kind, kind)).fetchone()
         if not row:
             return None
         facts = [dict(r) for r in self.conn.execute(
