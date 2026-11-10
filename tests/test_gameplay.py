@@ -187,6 +187,36 @@ class GameplayTests(GameFixture):
             game.run_turn("冒险尝试")
         self.assertTrue(game.is_over)
 
+    def test_injury_severity_controls_damage(self):
+        """P1-8：掉多少血由档位决定，模型填的数字不再直接生效。"""
+        cases = (("light", 10), ("medium", 25), ("heavy", 45))
+        for severity, expected_damage in cases:
+            with self.subTest(severity=severity):
+                llm = Replies(
+                    ("危险尝试", {"judgment": {"type": "action", "failure_consequence": "injury",
+                                              "failure_severity": severity}}),
+                    ("你受了伤。", {}),
+                )
+                game = self.game(llm, hp=100)
+                with patch.object(random, "random", return_value=0.999999), \
+                        patch.object(random, "uniform", return_value=1.0):
+                    game.run_turn("硬闯")
+                hp_after = game.state.data["player"]["attributes"]["hp"]
+                self.assertEqual(100 - hp_after, expected_damage)
+
+    def test_huge_legacy_failure_damage_is_mapped_to_severity(self):
+        """兼容旧字段：failure_damage=99999 按比例映射成重伤，扣血仍 ≤ 生命上限 54%。"""
+        llm = Replies(
+            ("危险尝试", {"judgment": {"type": "action", "failure_consequence": "injury",
+                                      "failure_damage": 99999}}),
+            ("你受了重伤。", {}),
+        )
+        game = self.game(llm, hp=100)
+        with patch.object(random, "random", return_value=0.999999):
+            game.run_turn("硬闯")
+        hp_after = game.state.data["player"]["attributes"]["hp"]
+        self.assertGreaterEqual(hp_after, 46)
+
     def test_failed_second_call_rolls_back_items_hp_memory_and_disk(self):
         llm = Replies(
             ("准备逃跑", {"location": "新地点", "combat": {"enemy_name": "敌人", "enemy_power": 20,
@@ -327,7 +357,7 @@ class GameplayTests(GameFixture):
                                 "factors": {f"不利{i}": -3 for i in range(6)},
                                 "failure_consequence": "injury", "failure_damage": 99999}}
         llm = Replies(("躲", request), ("巨石砸了下来。", {}))
-        game = self.game(llm, hp=50)
+        game = self.game(llm, hp=10)  # 重伤档最多扣 54%，10 点血必定被打到 0
         game.state.data["player"]["talents"] = [{"name": "古玉护佑", "description": "抵挡致命一击"}]
         with patch.object(random, "random", return_value=0.999999):
             game.run_turn("硬接巨石")

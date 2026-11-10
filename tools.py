@@ -158,7 +158,11 @@ UPDATE_TOOL = {
                             "enum": ["setback", "injury", "death"],
                             "description": "依据已有环境、能力和危险声明失败后果：普通受挫、受伤或死亡。致命风险不享受强制成功保底。",
                         },
-                        "failure_damage": {"type": "integer", "minimum": 1, "description": "injury失败时扣除的生命。由系统结算，可能耗尽生命。"},
+                        "failure_severity": {
+                            "type": "string",
+                            "enum": ["light", "medium", "heavy"],
+                            "description": "injury 失败时的伤势档位：light=轻伤 / medium=中度受伤 / heavy=重伤。实际扣多少血由系统按生命上限比例结算，不要填具体数值。",
+                        },
                         "certain_failure": {"type": "boolean", "description": "确实没有成功/安全完成的现实条件时为true，不掷骰、不保底。不会飞且无缓冲地从千丈崖跳向尖石等必死行为必须填写true并将失败后果设为death。"},
                         "reason": {"type": "string", "description": "本次风险与可行性的已有依据，不临时编造救援或隐藏能力。"},
                     },

@@ -1,6 +1,7 @@
 """游戏编排：每轮流程、战斗/非战斗判定、状态更新、历史压缩、存读档。"""
 import copy
 import json
+import random
 import combat as combat_module
 import dynamics as dynamics_module
 import judgment as judgment_module
@@ -259,6 +260,31 @@ class Game:
             return value
         return 100
 
+    # 受伤判定的档位 → 生命上限占比（P1-8）。模型只能声明轻重，具体伤害由代码结算。
+    SEVERITY_DAMAGE_RATIO = {"light": 0.10, "medium": 0.25, "heavy": 0.45}
+
+    @classmethod
+    def _severity_from_damage(cls, damage, max_hp):
+        """兼容旧字段 failure_damage：按占生命上限的比例映射到最近的档位。"""
+        try:
+            ratio = float(damage) / max(1.0, float(max_hp))
+        except (TypeError, ValueError):
+            return "medium"
+        if ratio < 0.175:
+            return "light"
+        if ratio < 0.35:
+            return "medium"
+        return "heavy"
+
+    def _injury_damage(self, req):
+        """受伤判定的实际扣血：档位 × 生命上限 × 0.8~1.2 随机浮动（P1-8）。"""
+        max_hp = self._get_max_hp()
+        severity = req.get("failure_severity")
+        if severity not in self.SEVERITY_DAMAGE_RATIO:
+            severity = self._severity_from_damage(req.get("failure_damage"), max_hp)
+        ratio = self.SEVERITY_DAMAGE_RATIO[severity]
+        return max(1, int(round(max_hp * ratio * random.uniform(0.8, 1.2))))
+
     def _consume_death_protection(self):
         player = self.state.data["player"]
         used = player.setdefault("death_protections_used", {})
@@ -424,10 +450,9 @@ class Game:
                 self.state.mark_dead(req.get("reason") or subject or "致命行动失败")
                 hp = 0
         elif not success and consequence == "injury":
-            damage = req.get("failure_damage")
-            damage = int(damage) if isinstance(damage, (int, float)) else 25
-            max_hp = self.state.data["player"]["attributes"].get("max_hp") or 100
-            hp = max(0, hp - max(1, min(damage, max_hp)))
+            # P1-8：掉多少血由代码按档位决定，模型只能声明轻重
+            damage = self._injury_damage(req)
+            hp = max(0, hp - damage)
             self.state.data["player"]["attributes"]["hp"] = hp
             brief += " 玩家受到伤害。"
             if hp <= 0:

@@ -38,7 +38,7 @@ combat.lethal 默认 true；只有已明确的训练、切磋、非致命抓捕�
 无需判定：普通移动、闲聊、观察显而易见的事物、买卖等没有悬念的日常动作——直接叙述即可，不要为了判定而判定。
 
 【真实风险与死亡——没有主角保护】
-危险行动必须声明 judgment.failure_consequence：setback（普通受挫）、injury（受伤，填写 failure_damage）、death（失败即死亡），并用 reason 说明已有的危险依据。
+危险行动必须声明 judgment.failure_consequence：setback（普通受挫）、injury（受伤，填写 failure_severity=light/medium/heavy）、death（失败即死亡），并用 reason 说明已有的危险依据。
 没有实际生还条件的致命行为必须在同一轮结算：如不会飞行且没有缓冲或救援地从千丈崖跳向尖石、普通身体进入致命火海等，声明 certain_failure=true、failure_consequence=death。不可凭空增加水潭、树枝、救援者、护体血脉或复活能力。
 合理的致命危险会导致死亡，生命耗尽也会结束这段人生。不能以“昏迷、濒死、被救、意外觉醒”代替已确定的死亡；不能为了能继续游戏而篡改结局。也不能无前因地让普通行动突然致死。
 系统已判定死亡时，叙述克制的最终结果，options 必须为空，不再安排下一步行动。已有能力也只按明确且已实现的规则使用，不能临时发明复活机制。
