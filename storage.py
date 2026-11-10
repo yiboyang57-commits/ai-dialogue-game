@@ -199,14 +199,24 @@ class SaveDB:
             os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=FULL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.executescript(SCHEMA)
-        self.fts_available = self._try_create_fts()
-        self._migrate_schema()
-        self.set_meta("schema_version", str(SCHEMA_VERSION))
-        self.conn.commit()
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=FULL")
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self.conn.executescript(SCHEMA)
+            self.fts_available = self._try_create_fts()
+            self._migrate_schema()
+            if self.fts_available:
+                # 旧环境曾退回 LIKE 时可能没有索引；补齐旧回合，避免只搜索到新写入的回合。
+                self.conn.execute(
+                    "INSERT INTO turns_fts(rowid,player_input,narrative,summary) "
+                    "SELECT t.id,COALESCE(t.player_input,''),t.narrative,COALESCE(t.summary,'') FROM turns t "
+                    "WHERE NOT EXISTS (SELECT 1 FROM turns_fts f WHERE f.rowid=t.id)")
+            self.set_meta("schema_version", str(SCHEMA_VERSION))
+            self.conn.commit()
+        except Exception:
+            self.conn.close()
+            raise
 
     def _migrate_schema(self):
         """老库升级：补 summary 列；FTS 旧版只有两列时重建并回填。"""

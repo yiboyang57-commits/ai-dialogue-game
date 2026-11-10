@@ -7,6 +7,18 @@
 
 ---
 
+### v2.24 复审后的当前约定（2026-11-10）
+
+- R1–R8 已落实；全量 158 项，评测见 `docs/memory_eval.md`。JSON 主存储、SQLite 默认关闭不变。
+- `storage.SCHEMA_VERSION=4`；实体唯一键是 `(kind,name)`，`entity_profile(name,kind=...)` 可区分同名实体。
+- `state_changes` 保存模型增量和代码结算后的 `diff_json`，不再有 `state_after_json`；快照 + 精确差异回放，不能重新调用判定或成长钳制来重建新记录。
+- 已消失事实必须封口，物品归零；回合前事实以 N−1 起算。别名声明先到先得，自动同姓称呼遇冲突要撤销。
+- 召回最多 8 个低频词、5 条往事：关键词相关度主导，新近度权重 0.1；点名实体查全部提及，未点名只查最近 1 次；当前开放事实不重复召回。
+- 属性单条事件和同属性单轮总增量均限制 ±20，直写也不能绕过；参与判定属性总值 0~200，其余自由数值属性 ±10000，判定读回合前快照。
+- 写库异常不能回滚已保存的 JSON；`Game.storage_errors` 统计本会话失败回合，日志 `save/wanjie.log`，下次写入补 `gap` 和快照。最后成功回合在数据库 `meta.last_successful_turn`。
+- 地址栏只接受 `临时-` 槽，新槽由 `secrets.token_urlsafe(12)` 生成；命名存档从列表恢复。这不是多人账号权限系统。
+- JSON 迁移原文回合号从当前 `meta.turn` 倒推，返回值仍是迁移条数，不是最后回合号。
+
 ## 0. 这个项目是什么（60 秒版）
 
 一个中文文字冒险游戏：玩家设定世界观+主角，**DeepSeek 模型扮演主持人（GM）**推进剧情。
@@ -44,7 +56,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**132 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**158 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -118,16 +130,16 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 775 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 823 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
-| `app.py` | 1454 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
+| `game.py` | 806 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `world_state.py` | 849 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `app.py` | 1463 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
 | `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
 | `world_gen.py` | 485 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
 | `main.py` | 385 | CLI 入口与菜单 |
 | `judgment.py` | 353 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
-| `prompts.py` | 221 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
-| `tools.py` | 240 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
+| `prompts.py` | 249 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
+| `tools.py` | 247 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
 | `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
 | `config.py` | 185 | 路径、常量、存档槽、Key 读写 |
 | `llm_client.py` | 136 | urllib 直连 DeepSeek，tool calling 解析 |
@@ -136,7 +148,8 @@
 | `seasons.py` | 155 | **岁月模式**：按旬推进时间、掷小插曲/打断事件、回血与时长文案（纯函数 + 数据表） |
 | `save_bundle.py` | 57 | 网页版存档导出/导入 |
 | `gm_rules.py` / `gm_rules.json` | 51 | 主持人全局限制条件（与世界观解耦，可编辑） |
-| `storage.py` | 254 | **路线图阶段 1**：SQLite 事件层（turns/state_changes/rolls/snapshots），可选双写 + 迁移 |
+| `storage.py` | 824 | **路线图阶段 1/2**：SQLite 事件层（turns/state_changes/rolls/snapshots）
++ 实体/事实/提及（entities/aliases/mentions/facts）+ 检索（entity_profile / recall / recall_for_turn，FTS5→LIKE 兜底）|
 | `scripts/migrate_json_to_sqlite.py` | 52 | 把 JSON 存档迁移成 .db（`--slot` / `--all`） |
 | `world.example.json` | — | 世界观模板示例 |
 | `万界.txt` / `九天万界.docx` | — | **设计参考文档，不被任何代码引用**，不要当成依赖 |
@@ -285,9 +298,10 @@ Game._play_turn(player_input, add_user)
 | **判定** | `combat` | object | `enemy_name,enemy_power,action(fight\|flee)` **必填**；可选 `use_item,lethal` |
 | **判定** | `judgment` | object | `type` **必填**；可选 `subject` / `factors` / `use_item` / `certain_failure` / `reason` / `failure_consequence`（枚举 `setback\|injury\|death`）/ `failure_severity`（`light\|medium\|heavy`，`injury` 时由代码按生命上限比例结算） |
 | 动态 | `relationship_events` | array | `{subject, event}`，好感度由系统按事件表换算，**模型不写数值** |
-| 动态 | `attribute_events` | array | `{event}` 或 `{attribute, delta}`；`hp`/`max_hp` 是系统独占，写入被忽略（审查 H1） |
+| 动态 | `attribute_events` | array | `{event}` 或 `{attribute, delta}`；单条及单属性单轮 ±20；`hp`/`max_hp` 写入被忽略 |
 | 输出 | `options` | string[] | 结算后的 2~4 个显性选项；死亡时必须为空 |
 | 输出 | `turn_event` | string | 一句话本轮事件，进 `event_log` |
+| 输出 | `turn_summary` | string | 一两句话概括本轮发生了什么（检索/回忆用，不写数值）。入库到 SQLite `turns.summary`，FTS 索引并优先作为召回片段 |
 | **岁月** | `time_block` | object | `plan`/`days` **必填**，`seclusion` 可选。声明"一段时间做什么"，**由代码按旬推进并结算**；模型不得自己跳时间，也不得在本次回复里写出这段经过 |
 | **岁月** | `offscreen` | string[] | 玩家不知道的幕后进展，每条一句。去重、保留最近 10 条；**只进 `to_summary()`，绝不进 `to_player_summary()`**。`time_block` 本身不在 `apply_update` 里处理（走 `game._resolve_block` 两段式）|
 
@@ -372,7 +386,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 132 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 158 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -421,6 +435,9 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 | 系统提示的行为约束 | `prompts.SYSTEM_PROMPT` 正文 + `build_system_prompt()` 的拼接顺序 |
 | 模型能写哪些状态字段 | `tools.UPDATE_TOOL` 的 JSON Schema **（改 schema 必须同步 `world_state.apply_update`）** |
 | 存档历史/审计（SQLite） | `storage.py`；`WANJIE_STORAGE=sqlite` 开启双写；迁移用 `scripts/migrate_json_to_sqlite.py` |
+| 记忆检索 / 某事某人的时间线 | `storage.SaveDB.entity_profile(name)` / `.recall(query=, entity=)`；
+| 每轮自动召回（相关往事） | `storage.recall_for_turn()` + `prompts.build_turn_messages(recalled=)`；
+只有 `WANJIE_STORAGE=sqlite` 且库存在时启用 |
 | 上下文长度/压缩频率 | `config.py`：`KEEP_RECENT_ENTRIES=6` / `COMPRESS_EVERY_TURNS=20` / `MAX_BUFFER_ENTRIES=80` / `COMPRESS_MAX_FAILURES=3` / `COMPRESS_RETRY_TURNS=5` / `MAX_EVENT_LOG=15` / `MAX_CHAPTER_SUMMARIES=6` |
 | 模型名/接口地址 | `config.DEFAULT_MODEL` / `config.BASE_URL`（或 `config.json` 的 `model`） |
 | 天赋候选池的生成/去重/保底 | `character_builder.py`（`POOL_TARGET_COUNTS` / `_ensure_floor` / `sample_hand`） |
@@ -489,8 +506,13 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 11. **容错**：`apply_update` 对每个字段做类型守卫，格式不对的单项跳过而不是让整轮报错；
     文字型属性（如 `修为="筑基初期"`）不参与数值增减。`world_gen.normalize_template` 接受
     `inventory` 为字符串列表 / `{名: 数量}`，`characters` 为列表 / `{名: 描述}`。
-12. **SQLite 存储（阶段 1 第一步）**：`storage.py` 是可选审计层，JSON 仍是主存储；
+12. **SQLite 存储（阶段 1+2 第一层）**：`storage.py` 是可选审计/实体事实层，JSON 仍是主存储；
     开启双写用环境变量 `WANJIE_STORAGE=sqlite`。**不要把 .db 当主存储读**（读档仍走 JSON）。
+    实体/事实由代码从前后状态差异生成（不靠模型抽取）；检索先精确实体事实、再 FTS5 trigram、
+    1~2 字回退 LIKE。每轮会按「相关度 + 重要度 + 时间衰减」召回 ≤5 条往事插进提示词
+    （状态摘要之后、最近 3 轮之前，预算 1200 字）。
+    每回合的 `turns.summary` 是模型写的一两句概括，检索时优先于正文片段；正文仍完整保留。
+    语义检索/分层摘要/主持人只读工具（§2.6）尚未实现。
 13. **CI（待启用）**：工作流模板在 `docs/ci-tests.yml`（`py_compile` + 全量测试，不调用 API），
     `.github/workflows/tests.yml` 也已放好，但当前 PAT 缺 `workflow` scope 推不上去；
     补权限后 `git add .github/workflows/tests.yml && git commit && git push` 即可启用。
@@ -499,7 +521,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 132 passed，再动手。
+1. **先跑基线测试**（§1），确认 158 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -514,7 +536,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，132 passed）
+# 全量测试（唯一可靠命令，158 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动

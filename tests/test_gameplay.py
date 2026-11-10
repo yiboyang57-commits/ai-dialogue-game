@@ -1555,6 +1555,32 @@ class StorageSQLiteTests(unittest.TestCase):
             self.assertEqual(db.list_turns()[0]["turn_no"], 23)
             self.assertEqual(db.load_state(), st.data)
 
+    def test_fts_recovery_indexes_old_turns_and_literal_queries(self):
+        path = config.db_path_for("")
+        with storage.SaveDB(path) as db:
+            db.record_turn(1, "action", '他说"你好"，报价100%，代号A-B:。')
+            db.conn.execute("DROP TABLE turns_fts")
+        with storage.SaveDB(path) as db:
+            db.record_turn(2, "action", '他说"你好"，新的见面。')
+            self.assertEqual({r["turn_no"] for r in db.recall('他说"你好"')["turns"]}, {1, 2})
+            for query in ("100%", "A-B:"):
+                self.assertEqual(db.recall(query)["turns"][0]["turn_no"], 1)
+            db.fts_available = False
+            self.assertEqual(db.recall("100%")["turns"][0]["turn_no"], 1)
+            self.assertEqual(db.recall("不存在%")["turns"], [])
+
+    def test_recall_only_closed_facts_with_time_range(self):
+        st = self._state()
+        st.data["characters"] = {"赵执事": {"attitude_toward_player": "敌视"}}
+        with storage.SaveDB(config.db_path_for("")) as db:
+            db.record_turn(1, "action", "一次相遇。", state=st.data)
+            before = copy.deepcopy(st.data)
+            st.data["characters"]["赵执事"]["attitude_toward_player"] = "友善"
+            db.record_turn(10, "action", "冰释前嫌。", state=st.data, state_before=before)
+            hits = db.recall_for_turn("赵执事以前的态度", st.data, 20)
+            self.assertTrue(any("第 1~9 回" in h["text"] and "敌视" in h["text"] for h in hits))
+            self.assertFalse(any("友善" in h["text"] for h in hits))
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},
