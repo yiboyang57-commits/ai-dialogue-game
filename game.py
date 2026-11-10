@@ -109,6 +109,9 @@ class Game:
             realm_gap = realm_gap if isinstance(realm_gap, (int, float)) and realm_gap > 0 else 5
             power_cap = realm_gap * max(1.0, block_days / 180.0)
         apply_update(self.state, update, power_cap=power_cap)
+        # P1-11：场景模式里睡一夜/赶几天路也会真的过日子，计入日历与年龄（模型最多声明 9 天）
+        if not block_days and isinstance(update, dict) and update.get("days_passed") is not None:
+            self._advance_calendar(max(0, min(9, safe_int(update["days_passed"], 0) or 0)))
         if already_dead or self.state.is_dead:
             self.state.mark_dead(cause or update.get("turn_event") or "生命耗尽")
         self.state.bump_turn()
@@ -510,6 +513,23 @@ class Game:
         return text or "", update
 
     # ---- 岁月模式：一段时间的安排 ----
+    def _advance_calendar(self, days):
+        """推进日历与年龄（只由代码写）。返回实际推进的天数。"""
+        days = safe_int(days, 0) or 0
+        if days <= 0:
+            return 0
+        d = self.state.data
+        calendar = d.setdefault("calendar", {"days": 0})
+        before = safe_int(calendar.get("days"), 0)
+        calendar["days"] = before + days
+        attrs = d.setdefault("player", {}).setdefault("attributes", {})
+        years = calendar["days"] // 360 - before // 360
+        if years:
+            for key in ("年龄", "age", "岁数"):
+                if safe_int(attrs.get(key)) is not None:
+                    attrs[key] = safe_int(attrs[key]) + years
+        return days
+
     def _resolve_block(self, req, player_input, draft=None, context_update=None):
         """按旬掷随机事件并结算时间、年龄与休养回血，再让模型把这段日子写出来。"""
         d = self.state.data
@@ -519,17 +539,9 @@ class Game:
         known = [n for n, c in (d.get("characters") or {}).items() if isinstance(c, dict)]
         result = seasons.roll_block(days, seclusion, known)
         self._block_elapsed = result["elapsed"]  # 供 _commit 放宽战力成长上限
+        self._advance_calendar(result["elapsed"])
 
-        # 日历与年龄
-        calendar = d.setdefault("calendar", {"days": 0})
-        before = safe_int(calendar.get("days"), 0)
-        calendar["days"] = before + result["elapsed"]
         attrs = d.setdefault("player", {}).setdefault("attributes", {})
-        years = calendar["days"] // 360 - before // 360
-        if years:
-            for key in ("年龄", "age", "岁数"):
-                if safe_int(attrs.get(key)) is not None:
-                    attrs[key] = safe_int(attrs[key]) + years
 
         # 休养回血（代码结算，模型不能改）
         max_hp = attrs.get("max_hp") if isinstance(attrs.get("max_hp"), (int, float)) else 100

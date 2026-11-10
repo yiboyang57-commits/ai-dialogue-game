@@ -30,6 +30,12 @@ UPDATE_TOOL = {
                     "type": "string",
                     "description": "本次行动结束的游戏内时间。短动作保持原日期与时段，不擅自跳天；仅明确的等待/旅行/睡眠/闭关等长行动推进相应时间。",
                 },
+                "days_passed": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9,
+                    "description": "本轮行动实际经过的整天数（0~9），例如睡一夜填 1、赶两天路填 2；超过 9 天必须改用 time_block 交给系统推进并结算。",
+                },
                 "player_attributes": {
                     "type": "object",
                     "description": (

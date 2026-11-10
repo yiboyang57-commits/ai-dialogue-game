@@ -864,6 +864,28 @@ class SeasonsTests(GameFixture):
         self.assertIn("time_block", prompts.SYSTEM_PROMPT)
         self.assertIn("底线", prompts.SYSTEM_PROMPT)
 
+    # ---- P1-11：场景模式的整天也要计入日历 ----
+    def test_days_passed_advances_calendar(self):
+        llm = Replies(("你睡了一夜。", {"days_passed": 2}))
+        game = self.game(llm)
+        game.run_turn("睡一觉")
+        self.assertEqual(game.state.data["calendar"]["days"], 2)
+
+    def test_days_passed_is_clamped_to_nine(self):
+        llm = Replies(("你睡了好久。", {"days_passed": 500}))
+        game = self.game(llm)
+        game.run_turn("长睡")
+        self.assertEqual(game.state.data["calendar"]["days"], 9)
+
+    def test_days_passed_crosses_a_year_and_adds_age(self):
+        llm = Replies(("等了几天。", {"days_passed": 9}))
+        game = self.game(llm)
+        game.state.data["player"]["attributes"]["年龄"] = 20
+        game.state.data["calendar"] = {"days": 356}
+        game.run_turn("等待")
+        self.assertEqual(game.state.data["calendar"]["days"], 365)
+        self.assertEqual(game.state.data["player"]["attributes"]["年龄"], 21)
+
 
 if __name__ == "__main__":
     unittest.main()
