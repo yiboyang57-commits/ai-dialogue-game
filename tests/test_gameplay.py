@@ -1521,6 +1521,40 @@ class StorageSQLiteTests(unittest.TestCase):
         self.assertEqual(game.storage_errors, 0)
         self.assertIn("读取历史记忆失败", Path(self.tmp.name, "wanjie.log").read_text())
 
+    def test_migration_keeps_real_turn_numbers_and_continues(self):
+        st = self._state()
+        st.data["meta"]["turn"] = 23
+        st.data["characters"] = {"陆青鸢": {"status": "安好"}}
+        st.save()
+        mem = memory.Memory()
+        mem.recent = [{"role": role, "content": f"第 {n} 回{role}"}
+                      for n in (21, 22, 23) for role in ("user", "assistant")]
+        mem.recent.append({"role": "user", "content": "未完成的行动"})
+        mem.save()
+        path, count = storage.migrate_from_json(save_dir=self.tmp.name)
+        self.assertEqual(count, 3)
+        with storage.SaveDB(path) as db:
+            self.assertEqual([r["turn_no"] for r in reversed(db.list_turns())], [21, 22, 23])
+            self.assertEqual(db.load_state(), st.data)
+            self.assertTrue(all(f["valid_from_turn"] == 23 for f in db.entity_profile("陆青鸢")["facts"]))
+        game = Game(st, mem, Replies(("第24回", {})), rules=[])
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            game.run_turn("继续")
+        with storage.SaveDB(path) as db:
+            self.assertEqual(db.list_turns()[0]["turn_no"], 24)
+            self.assertFalse(any(r["kind"] == "gap" for r in db.list_turns()))
+            self.assertEqual(db.load_state(), world_state.WorldState.load().data)
+
+    def test_migration_without_history_keeps_current_turn(self):
+        st = self._state()
+        st.data["meta"]["turn"] = 23
+        st.save()
+        path, count = storage.migrate_from_json()
+        with storage.SaveDB(path) as db:
+            self.assertEqual(count, 1)
+            self.assertEqual(db.list_turns()[0]["turn_no"], 23)
+            self.assertEqual(db.load_state(), st.data)
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},

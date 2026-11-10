@@ -775,32 +775,34 @@ def migrate_from_json(save_key="", save_dir=None):
     except (json.JSONDecodeError, OSError):
         rounds = []
 
-    db_path = config.db_path_for(save_key)
+    db_path = os.path.join(base, "game" + suffix + ".db")
     db = SaveDB(db_path)
     try:
         db.set_meta("source", "json")
         db.set_meta("save_key", save_key or "")
         db.set_meta("migrated_at", _now())
         db.conn.commit()
-        turn_no = 0
+        final_turn = max(0, int((state_data.get("meta") or {}).get("turn") or 0))
+        records = []
         pending_user = None
         for msg in rounds:
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role")
             content = msg.get("content") or ""
             if role == "user":
                 pending_user = content
-            elif role == "assistant" and pending_user is not None:
-                turn_no += 1
-                db.record_turn(turn_no, "migrated", content, player_input=pending_user, update={})
+            elif role == "assistant":
+                records.append((pending_user, content))
                 pending_user = None
-        if pending_user is not None:
-            turn_no += 1
-            db.record_turn(turn_no, "migrated", "", player_input=pending_user, update={})
-        if turn_no == 0:
-            turn_no = 1
-            db.record_turn(turn_no, "migrated",
-                           state_data.get("narrative_summary") or "（迁移的存档，没有可用的对话原文）",
-                           update={})
+        # 未得到回复的尾部输入不算已结算回合；无原文时只留下当前回合的迁移说明。
+        if not records:
+            records = [(None, state_data.get("narrative_summary") or "（迁移的存档，没有可用的对话原文）")]
+        records = records[-max(1, final_turn):]
+        first_turn = final_turn - len(records) + 1
+        for offset, (player_input, content) in enumerate(records):
+            turn_no = first_turn + offset
+            db.record_turn(turn_no, "migrated", content, player_input=player_input, update={})
         # 最后一回合写成完整快照，保证 load_state 与 JSON 一致
         last_id = db.conn.execute("SELECT id FROM turns ORDER BY id DESC LIMIT 1").fetchone()["id"]
         db.record_snapshot(last_id, state_data)
@@ -809,4 +811,4 @@ def migrate_from_json(save_key="", save_dir=None):
             db._sync_entities(last_id, turn_no, None, state_data)
     finally:
         db.close()
-    return db_path, turn_no
+    return db_path, len(records)
