@@ -10,7 +10,12 @@ import time
 import seasons
 from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic, read_json_save
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
-from judgment import death_protection_limits, ITEM_MODIFIERS
+from judgment import death_protection_limits, ITEM_MODIFIERS, ATTRIBUTE_FACTOR_LINKS
+
+ATTRIBUTE_MAX_DELTA = 20
+ATTRIBUTE_FACTOR_CEILING = 200
+ATTRIBUTE_FREE_CEILING = 10000
+FACTOR_ATTRIBUTES = frozenset(attr for links in ATTRIBUTE_FACTOR_LINKS.values() for attr in links.values())
 
 MAX_OFFSCREEN = 10         # 幕后进展最多保留条数（玩家看不到原文，只列给模型）
 RELATION_MAX_DELTA = 30    # P1-10：单轮对同一对象的好感变化上限
@@ -609,6 +614,7 @@ def apply_update(state, update, power_cap=None):
     d = state.data
     player = d.setdefault("player", {})
     attrs = player.setdefault("attributes", {})
+    attributes_before = dict(attrs)  # 本次合并的累计变化以进入时为基准
     if not isinstance(d.get("characters"), dict):
         d["characters"] = {}
     if not isinstance(d.get("inventory"), list):
@@ -643,6 +649,11 @@ def apply_update(state, update, power_cap=None):
                 incoming["max_hp"] = _clean_number(min(clamped, MAX_HP_CEILING))
             else:
                 incoming.pop("max_hp")
+        for attr in list(incoming):
+            if attr not in SYSTEM_OWNED_ATTRIBUTES and (
+                    attr in FACTOR_ATTRIBUTES or isinstance(incoming[attr], (int, float))):
+                if not _is_finite_number(incoming[attr]):
+                    incoming.pop(attr)
         attrs.update(incoming)
     if "player_status_effects" in update:
         effects = _as_str_list(update["player_status_effects"])
@@ -773,7 +784,7 @@ def apply_update(state, update, power_cap=None):
         cur_int = safe_int(cur)
         if cur_int is None:
             return
-        attrs[attr] = cur_int + delta
+        attrs[attr] = cur_int + max(-ATTRIBUTE_MAX_DELTA, min(ATTRIBUTE_MAX_DELTA, delta))
 
     for ev in update.get("attribute_events") or []:
         if not isinstance(ev, dict):
@@ -787,6 +798,18 @@ def apply_update(state, update, power_cap=None):
             deltas = ATTRIBUTE_EVENTS.get(ev.get("event")) or {}
             for attr, delta in deltas.items():
                 bump(attr, int(delta))
+
+    # 统一收口直写与事件两条路径，避免同一回合拆成多条绕过上限。
+    for attr, value in list(attrs.items()):
+        if attr in SYSTEM_OWNED_ATTRIBUTES or not _is_finite_number(value):
+            continue
+        low, high = ((0, ATTRIBUTE_FACTOR_CEILING) if attr in FACTOR_ATTRIBUTES
+                     else (-ATTRIBUTE_FREE_CEILING, ATTRIBUTE_FREE_CEILING))
+        before = attributes_before.get(attr, 0)
+        before = before if _is_finite_number(before) else 0
+        before = max(low, min(high, before))
+        change = max(-ATTRIBUTE_MAX_DELTA, min(ATTRIBUTE_MAX_DELTA, value - before))
+        attrs[attr] = _clean_number(max(low, min(high, before + change)))
 
     # 本轮可选行动（显而易见选项，不含隐藏剧情触发）
     if "options" in update:

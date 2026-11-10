@@ -551,7 +551,8 @@ class Game:
 
         # P2-19：有对应玩家属性的因素（寻宝←福缘、说服←魅力）由代码按属性值换算并覆盖模型填写，
         # 模型用别名/近似写法（如「福缘运气」）填的同义因素也一并覆盖。
-        attrs = self.state.data.get("player", {}).get("attributes") or {}
+        previous = getattr(self, "_state_before", None) or self.state.data
+        attrs = previous.get("player", {}).get("attributes") or {}
         for factor_name, attr_name in judgment_module.ATTRIBUTE_FACTOR_LINKS.get(jtype, {}).items():
             score = judgment_module.attribute_factor(attrs.get(attr_name))
             for key in [k for k in factors if judgment_module.same_factor(k, factor_name)]:

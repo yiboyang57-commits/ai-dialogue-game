@@ -1453,6 +1453,37 @@ class StorageSQLiteTests(unittest.TestCase):
             self.assertEqual(db.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertNotIn("state_after_json", {r["name"] for r in db.conn.execute("PRAGMA table_info(state_changes)")})
 
+    def test_attribute_event_and_direct_growth_caps(self):
+        st = self._state()
+        world_state.apply_update(st, {"attribute_events": [{"attribute": "魅力", "delta": 1000000}]})
+        self.assertEqual(st.data["player"]["attributes"]["魅力"], 20)
+        for _ in range(20):
+            world_state.apply_update(st, {"attribute_events": [{"attribute": "魅力", "delta": 20}] * 10})
+        self.assertEqual(st.data["player"]["attributes"]["魅力"], 200)
+        fresh = self._state()
+        world_state.apply_update(fresh, {"player_attributes": {"魅力": 1000000, "自创属性": 1000000},
+                                         "attribute_events": [{"attribute": "魅力", "delta": 1000000}] * 10})
+        self.assertEqual(fresh.data["player"]["attributes"]["魅力"], 20)
+        self.assertEqual(fresh.data["player"]["attributes"]["自创属性"], 20)
+        fresh.data["player"]["attributes"]["自创属性"] = 9999
+        world_state.apply_update(fresh, {"attribute_events": [{"attribute": "自创属性", "delta": 20}]})
+        self.assertEqual(fresh.data["player"]["attributes"]["自创属性"], 10000)
+        world_state.apply_update(fresh, {"attribute_events": [{"attribute": "福缘", "delta": -1000000}]})
+        self.assertEqual(fresh.data["player"]["attributes"]["福缘"], 0)
+
+    def test_judgment_uses_previous_turn_attributes(self):
+        st = self._state()
+        st.data["player"]["attributes"]["魅力"] = 10
+        game = Game(st, memory.Memory(), Replies(("说服成功。", {})), rules=[])
+        game._state_before = copy.deepcopy(st.data)
+        st.data["player"]["attributes"]["魅力"] = 200
+        with patch.object(judgment, "resolve_judgment", return_value=(True, 0.5)) as resolve:
+            game._handle_judgment("尝试说服", {"judgment": {"type": "persuasion"}}, "说服")
+        links = judgment.ATTRIBUTE_FACTOR_LINKS["persuasion"]
+        for factor, attr in links.items():
+            if attr == "魅力":
+                self.assertEqual(resolve.call_args.args[1][factor], judgment.attribute_factor(10))
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},
