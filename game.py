@@ -380,12 +380,14 @@ class Game:
         factors = dict(factors) if isinstance(factors, dict) else {}
         talents = self._talent_entries()
 
-        # 对象是已知角色时，自动把“有效好感度(含相识时长)”换算为“当前好感度”因素（0~100 → -3~+3）
+        # 对象是已知角色时，按判定类型把“有效好感度(含相识时长)”换算成对应因素（0~100 → -3~+3）。
+        # P1-6：用代码值**覆盖**模型声明（不再 setdefault），且说服判定用「对方好感度」这个正确的键。
         chars = self.state.data.get("characters") or {}
-        if subject in chars and isinstance(chars[subject].get("affinity"), (int, float)):
+        affinity_key = {"relationship": "当前好感度", "persuasion": "对方好感度"}.get(jtype)
+        if affinity_key and subject in chars and isinstance(chars[subject].get("affinity"), (int, float)):
             turn = self.state.data.get("meta", {}).get("turn", 0)
             eff = dynamics_module.effective_affinity(chars[subject], turn)
-            factors.setdefault("当前好感度", round((eff - 50) / 50 * 3))
+            factors[affinity_key] = int(round((eff - 50) / 50 * 3))
 
         item_bonus = 0.0
         use_item = req.get("use_item")

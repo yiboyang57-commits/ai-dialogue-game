@@ -121,14 +121,61 @@ class GameplayTests(GameFixture):
         self.assertTrue(game.is_over)
         self.assertEqual(game.state.data["player"]["death_cause"], "不会飞行，千丈崖下无缓冲和救援")
 
-    def test_fatal_risk_has_no_guaranteed_success_but_ordinary_pity_remains(self):
-        ordinary = {"fails": 99}
-        dangerous = {"fails": 99}
+    def test_fatal_risk_has_no_pity_bonus_and_ordinary_pity_is_gradual(self):
+        # P1-7：保底从「到阈值直接 1.0」改为渐进加成；致命风险的判定仍然不吃保底
+        base = judgment.compute_judgment_probability("action", {}, [], 0, 0)
+        ordinary = judgment.compute_judgment_probability("action", {}, [], 0, 99)
+        fatal = judgment.compute_judgment_probability("action", {}, [], 0, 99, allow_pity=False)
+        self.assertAlmostEqual(fatal, base)
+        self.assertGreater(ordinary, fatal)
+        self.assertLess(ordinary, 1.0)  # 不再是必成功
         with patch.object(random, "random", return_value=0.999999):
-            success, _ = judgment.resolve_judgment("action", {}, [], 0, ordinary)
-            fatal_success, _ = judgment.resolve_judgment("action", {}, [], 0, dangerous, allow_pity=False)
-        self.assertTrue(success)
+            fatal_success, _ = judgment.resolve_judgment("action", {}, [], 0, {"fails": 99}, allow_pity=False)
         self.assertFalse(fatal_success)
+
+    def test_affinity_factor_is_set_by_code_not_model(self):
+        """P1-6：模型抢先填的「当前好感度」被代码算出的真实好感覆盖。"""
+        game = self.game(Replies(), hp=100)
+        game.state.data["characters"] = {"甲": {"description": "路人", "attitude_toward_player": "友善",
+                                               "affinity": 10, "met_turn": 0}}
+        game.llm = Replies(
+            ("你试图靠近。", {"judgment": {"type": "relationship", "subject": "甲",
+                                          "factors": {"当前好感度": 3}}}),
+            ("她退了半步。", {}))
+        captured = {}
+        real = judgment.resolve_judgment
+
+        def spy(jtype, factors, talents, item_bonus, pity, allow_pity=True, certain_failure=False):
+            captured[jtype] = dict(factors)
+            return real(jtype, factors, talents, item_bonus, pity,
+                        allow_pity=allow_pity, certain_failure=certain_failure)
+
+        with patch.object(judgment, "resolve_judgment", side_effect=spy), \
+                patch.object(random, "random", return_value=0.999999):
+            game.run_turn("向她表白")
+        self.assertLess(captured["relationship"]["当前好感度"], 0)
+
+    def test_persuasion_uses_the_right_affinity_factor_key(self):
+        """P1-6：说服判定注入的是「对方好感度」，不是「当前好感度」。"""
+        game = self.game(Replies(), hp=100)
+        game.state.data["characters"] = {"甲": {"description": "路人", "attitude_toward_player": "友善",
+                                               "affinity": 10, "met_turn": 0}}
+        game.llm = Replies(
+            ("你开口劝说。", {"judgment": {"type": "persuasion", "subject": "甲",
+                                          "factors": {"对方好感度": 3}}}),
+            ("她摇了摇头。", {}))
+        captured = {}
+        real = judgment.resolve_judgment
+
+        def spy(jtype, factors, talents, item_bonus, pity, allow_pity=True, certain_failure=False):
+            captured[jtype] = dict(factors)
+            return real(jtype, factors, talents, item_bonus, pity,
+                        allow_pity=allow_pity, certain_failure=certain_failure)
+
+        with patch.object(judgment, "resolve_judgment", side_effect=spy), \
+                patch.object(random, "random", return_value=0.999999):
+            game.run_turn("劝她留下")
+        self.assertLess(captured["persuasion"]["对方好感度"], 0)
 
     def test_injury_can_exhaust_life(self):
         llm = Replies(
@@ -489,6 +536,62 @@ class GameplayTuningTests(unittest.TestCase):
         self.assertIn("旧人0", summary)
 
 
+class JudgmentIntegrityTests(unittest.TestCase):
+    """P1-5 / P1-7：因素堆叠有上限；保底是渐进加成而不是必成。"""
+
+    def test_unknown_factors_cannot_stack_to_guarantee(self):
+        factors = {f"模型自造因素{i}": 3 for i in range(10)}
+        p = judgment.compute_judgment_probability("relationship", factors, [], 0, 0)
+        self.assertLess(p, 0.5)
+
+    def test_known_factors_total_is_capped(self):
+        factors = {name: 3 for name in judgment.JUDGMENT_TYPES["action"]["factors"]}
+        p = judgment.compute_judgment_probability("action", factors, [], 0, 0)
+        self.assertLess(p, 0.999)
+        self.assertGreater(p, 0.95)  # 仍然很有利，但不会变成必成
+
+    def test_pity_is_gradual_not_guaranteed(self):
+        factors = {name: -3 for name in judgment.JUDGMENT_TYPES["relationship"]["factors"]}
+        p = judgment.compute_judgment_probability("relationship", factors, [], 0, 12)
+        self.assertLess(p, 0.5)
+
+    def test_known_and_unknown_factors_share_the_cap(self):
+        known = {name: 3 for name in judgment.JUDGMENT_TYPES["action"]["factors"]}
+        unknown = {f"自造{i}": 3 for i in range(10)}
+        p = judgment.compute_judgment_probability("action", {**known, **unknown}, [], 0, 0)
+        self.assertLessEqual(p, judgment._sigmoid(judgment.FACTOR_TOTAL_CAP) + 1e-9)
+
+
+class SummaryTruncationTests(unittest.TestCase):
+    """P1-9：摘要截断时保留最新内容，特殊道具永远可见。"""
+
+    def test_newest_plot_flag_is_in_summary(self):
+        state = world_state.WorldState()
+        for i in range(25):
+            world_state.apply_update(state, {"plot_flags": {f"标记{i}": True}})
+        text = state.to_summary()
+        self.assertIn("标记24", text)
+        self.assertNotIn("标记0=", text)
+        self.assertIn("未列出", text)
+
+    def test_updated_old_flag_moves_to_end(self):
+        state = world_state.WorldState()
+        for i in range(25):
+            world_state.apply_update(state, {"plot_flags": {f"标记{i}": True}})
+        world_state.apply_update(state, {"plot_flags": {"标记0": "完成"}})
+        self.assertIn("标记0=完成", state.to_summary())
+
+    def test_special_item_survives_truncation(self):
+        state = world_state.WorldState()
+        world_state.apply_update(state, {"inventory_add": [{"name": "寻宝罗盘", "quantity": 1}]})
+        for i in range(20):
+            world_state.apply_update(state, {"inventory_add": [{"name": f"杂物{i}", "quantity": 1}]})
+        text = state.to_summary()
+        self.assertIn("寻宝罗盘", text)
+        self.assertIn("杂物19", text)
+        self.assertIn("另有", text)
+
+
 class GameplayAuthorityTests(GameFixture):
     """P0-2：战力 / 好感 / 相识回合 / 生命上限是系统独占字段，模型一句话改不动。"""
 
@@ -523,6 +626,23 @@ class GameplayAuthorityTests(GameFixture):
         before = state.data["characters"]["甲"]["affinity"]
         world_state.apply_update(state, {"relationship_events": [{"subject": "甲", "event": "赠礼"}]})
         self.assertGreater(state.data["characters"]["甲"]["affinity"], before)
+
+    def test_relationship_events_are_capped_per_turn(self):
+        """P1-10：同一人单轮写 4 次「救命之恩」只结算最强的一条，且单轮变化 ≤ 30。"""
+        state = self._fresh()
+        before = state.data["characters"]["甲"]["affinity"]
+        world_state.apply_update(state, {"relationship_events": [
+            {"subject": "甲", "event": "救命之恩"}] * 4})
+        char = state.data["characters"]["甲"]
+        self.assertLessEqual(char["affinity"], before + 30)
+        self.assertEqual(char["interactions"], 1)
+
+    def test_relationship_event_keeps_the_strongest(self):
+        state = self._fresh()
+        before = state.data["characters"]["甲"]["affinity"]
+        world_state.apply_update(state, {"relationship_events": [
+            {"subject": "甲", "event": "冒犯"}, {"subject": "甲", "event": "救命之恩"}]})
+        self.assertEqual(state.data["characters"]["甲"]["affinity"], min(before + 30, 100))
 
     def test_model_cannot_set_power_directly(self):
         state = self._fresh()

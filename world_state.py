@@ -10,9 +10,10 @@ import time
 import seasons
 from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic, read_json_save
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
-from judgment import death_protection_limits
+from judgment import death_protection_limits, ITEM_MODIFIERS
 
 MAX_OFFSCREEN = 10         # 幕后进展最多保留条数（玩家看不到原文，只列给模型）
+RELATION_MAX_DELTA = 30    # P1-10：单轮对同一对象的好感变化上限
 
 
 class WorldState:
@@ -252,20 +253,19 @@ class WorldState:
 
         inv = d.get("inventory") or []
         if inv:
-            shown = inv[:15]
-            item_str = "、".join(f"{i.get('name')}×{i.get('quantity', 1)}" for i in shown)
+            item_str, omitted = _summary_items(inv)
             lines.append(f"- 背包：{item_str}")
-            if len(inv) > 15:
-                lines.append("  …（其余物品略）")
+            if omitted > 0:
+                lines.append(f"  …（另有 {omitted} 件未列出）")
         else:
             lines.append("- 背包：空")
 
         flags = d.get("plot_flags") or {}
         if flags:
-            shown_flags = list(flags.items())[:20]
-            lines.append("- 剧情标记：" + "，".join(f"{k}={v}" for k, v in shown_flags))
-            if len(flags) > 20:
-                lines.append("  …（其余标记略）")
+            flag_str, omitted = _summary_flags(flags)
+            lines.append("- 剧情标记：" + flag_str)
+            if omitted > 0:
+                lines.append(f"  …（另有 {omitted} 个较早的标记未列出）")
 
         if d.get("current_goal"):
             lines.append(f"- 当前目标：{d['current_goal']}")
@@ -405,20 +405,19 @@ class WorldState:
 
         inv = d.get("inventory") or []
         if inv:
-            shown = inv[:15]
-            item_str = "、".join(f"{i.get('name')}×{i.get('quantity', 1)}" for i in shown)
+            item_str, omitted = _summary_items(inv)
             lines.append(f"- 背包：{item_str}")
-            if len(inv) > 15:
-                lines.append("  …（其余物品略）")
+            if omitted > 0:
+                lines.append(f"  …（另有 {omitted} 件未列出）")
         else:
             lines.append("- 背包：空")
 
         flags = d.get("plot_flags") or {}
         if flags:
-            shown_flags = list(flags.items())[:20]
-            lines.append("- 剧情标记：" + "，".join(f"{k}={v}" for k, v in shown_flags))
-            if len(flags) > 20:
-                lines.append("  …（其余标记略）")
+            flag_str, omitted = _summary_flags(flags)
+            lines.append("- 剧情标记：" + flag_str)
+            if omitted > 0:
+                lines.append(f"  …（另有 {omitted} 个较早的标记未列出）")
 
         if d.get("current_goal"):
             lines.append(f"- 当前目标：{d['current_goal']}")
@@ -464,6 +463,28 @@ def _characters_for_summary(chars, location_name, limit):
             (c["location"] in location_name or location_name in c["location"])]
     rest = [(n, c) for n, c in reversed(items) if (n, c) not in here]
     return (here + rest)[:limit]
+
+
+SUMMARY_FLAG_LIMIT = 20   # 摘要里最多列出的剧情标记数
+SUMMARY_ITEM_LIMIT = 15   # 摘要里最多列出的背包条目数
+
+
+def _summary_flags(flags):
+    """摘要用的剧情标记：保留**最近更新**的 20 个（更新时 apply_update 会把键移到末尾）。"""
+    items = list(flags.items())[-SUMMARY_FLAG_LIMIT:]
+    text = "，".join(f"{k}={v}" for k, v in items)
+    return text, len(flags) - len(items)
+
+
+def _summary_items(inventory):
+    """摘要用的背包：最近 15 件 + 永远带上 ITEM_MODIFIERS 里的特殊道具，并说明省略件数。"""
+    valid = [i for i in inventory if isinstance(i, dict) and i.get("name")]
+    recent = valid[-SUMMARY_ITEM_LIMIT:]
+    recent_names = {i.get("name") for i in recent}
+    special = [i for i in valid if i.get("name") in ITEM_MODIFIERS and i.get("name") not in recent_names]
+    shown = special + recent
+    text = "、".join(f"{i.get('name')}×{i.get('quantity', 1)}" for i in shown)
+    return text, len(valid) - len(shown)
 
 
 def _sanitize_character(info, trusted=False):
@@ -664,7 +685,12 @@ def apply_update(state, update, power_cap=None):
     d["inventory"] = [i for i in d["inventory"] if isinstance(i, dict) and safe_int(i.get("quantity"), 1) > 0]
 
     if isinstance(update.get("plot_flags"), dict):
-        d["plot_flags"].update(update["plot_flags"])
+        # 更新某个标记时把它移到末尾：摘要取最近 20 个，新标记才不会被老旧标记挤掉（P1-9）
+        for key, value in update["plot_flags"].items():
+            if not isinstance(key, str) or not key.strip():
+                continue
+            d["plot_flags"].pop(key, None)
+            d["plot_flags"][key] = value
 
     if update.get("current_goal") and isinstance(update["current_goal"], str):
         d["current_goal"] = update["current_goal"]
@@ -684,6 +710,8 @@ def apply_update(state, update, power_cap=None):
             anchor["player_power"] = _clean_number(max(current + delta, 0.001))
 
     # 关系事件：好感度动态增减（相识时长另由 time_bonus 派生）
+    # P1-10：同一对象单轮只取绝对值最大的一条事件，单轮好感变化钳制在 ±RELATION_MAX_DELTA。
+    best_events = {}
     for ev in update.get("relationship_events") or []:
         if not isinstance(ev, dict):
             continue
@@ -691,11 +719,17 @@ def apply_update(state, update, power_cap=None):
         event = ev.get("event")
         if not isinstance(subject, str) or not subject or event not in RELATION_EVENTS:
             continue
+        current = best_events.get(subject)
+        if current is None or abs(RELATION_EVENTS[event]) > abs(RELATION_EVENTS[current]):
+            best_events[subject] = event
+    for subject, event in best_events.items():
         c = d["characters"].get(subject)
         if not isinstance(c, dict):
             c = d["characters"][subject] = {}
         _ensure_affinity(c, turn)
-        c["affinity"] = clamp(safe_int(c.get("affinity"), 0) + RELATION_EVENTS[event], 0, 100)
+        before = safe_int(c.get("affinity"), 0)
+        delta = max(-RELATION_MAX_DELTA, min(RELATION_MAX_DELTA, RELATION_EVENTS[event]))
+        c["affinity"] = clamp(before + delta, 0, 100)
         c["interactions"] = safe_int(c.get("interactions"), 0) + 1
         d["characters"][subject] = d["characters"].pop(subject)
 

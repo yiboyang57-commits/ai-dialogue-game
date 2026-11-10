@@ -238,6 +238,10 @@ FACTOR_ALIASES = {
 
 DEFAULT_FACTOR_WEIGHT = 0.3  # 未知因素给温和权重，允许自定义因素
 
+UNKNOWN_FACTOR_CAP = 1.5   # P1-5：未知因素（模型自造名字）的合计贡献上限（logit）
+FACTOR_TOTAL_CAP = 6.0     # P1-5：全部因素贡献的合计上限（logit）
+PITY_BONUS_MAX = 3.0       # P1-7：连续失败的渐进保底加成上限（logit）
+
 
 def _factor_key(name):
     """因素名归一化：去掉 / ／ 、 空格，便于「福缘运气」匹配「福缘/运气」。"""
@@ -254,23 +258,45 @@ def factor_weight(jtype, name):
     return DEFAULT_FACTOR_WEIGHT
 
 
+def is_known_factor(jtype, name):
+    """该因素名是否命中判定类型预定义的因素表（含别名）。"""
+    spec = JUDGMENT_TYPES.get(jtype) or JUDGMENT_TYPES[DEFAULT_JUDGMENT]
+    name = FACTOR_ALIASES.get(str(name).strip(), str(name).strip())
+    wanted = _factor_key(name)
+    return any(_factor_key(known) == wanted for known in spec["factors"])
+
+
 def compute_judgment_probability(jtype, factors, talents, item_bonus_logit, pity_failures, allow_pity=True):
-    """拟合概率（未掷骰），pity_failures 达到保底阈值时返回 1.0。"""
+    """拟合概率（未掷骰）。
+
+    P1-5：未知因素合计钳制在 ±UNKNOWN_FACTOR_CAP，全部因素合计钳制在 ±FACTOR_TOTAL_CAP，
+    防止模型堆一堆自造因素把判定刷到必成或必败。
+    P1-7：连续失败改为渐进加成（每类按自己的保底阈值均分 PITY_BONUS_MAX），不再直接返回 1.0。
+    """
     spec = JUDGMENT_TYPES.get(jtype) or JUDGMENT_TYPES[DEFAULT_JUDGMENT]
     logit = spec["base"]
+    known_total = 0.0
+    unknown_total = 0.0
     for name, val in (factors or {}).items():
-        w = factor_weight(jtype, name)
         try:
             value = float(val)
-            if math.isfinite(value):
-                logit += w * max(-3, min(3, value))
         except (TypeError, ValueError):
-            pass
+            continue
+        if not math.isfinite(value):
+            continue
+        contribution = factor_weight(jtype, name) * max(-3, min(3, value))
+        if is_known_factor(jtype, name):
+            known_total += contribution
+        else:
+            unknown_total += contribution
+    unknown_total = max(-UNKNOWN_FACTOR_CAP, min(UNKNOWN_FACTOR_CAP, unknown_total))
+    logit += max(-FACTOR_TOTAL_CAP, min(FACTOR_TOTAL_CAP, known_total + unknown_total))
     logit += talent_bonus(jtype, talents)
     logit += item_bonus_logit or 0.0
 
-    if allow_pity and (pity_failures or 0) >= spec["pity"]:
-        return 1.0  # 大保底
+    if allow_pity and pity_failures:
+        pity_threshold = max(1, spec["pity"])
+        logit += min(PITY_BONUS_MAX, PITY_BONUS_MAX / pity_threshold * pity_failures)
     return min(max(_sigmoid(logit), 0.001), 0.999)
 
 
