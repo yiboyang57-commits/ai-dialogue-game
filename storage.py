@@ -16,6 +16,8 @@ import re
 import sqlite3
 import time
 
+AUTO_TITLES = ("师姐", "师兄", "掌柜", "执事", "长老", "前辈", "道友")
+
 QUERY_MAX_TERMS = 8
 QUERY_COMMON_RATIO = 0.20
 RECALL_TEXT_CHARS = 110
@@ -153,6 +155,9 @@ class SaveDB:
 
     def _migrate_schema(self):
         """老库升级：补 summary 列；FTS 旧版只有两列时重建并回填。"""
+        alias_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(aliases)")}
+        if "source" not in alias_cols:
+            self.conn.execute("ALTER TABLE aliases ADD COLUMN source TEXT NOT NULL DEFAULT 'declared'")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(turns)").fetchall()}
         if "summary" not in cols:
             try:
@@ -338,6 +343,37 @@ class SaveDB:
             eid = self._entity_id("plot", key, turn_id)
             self._set_facts(eid, turn_id, turn_no, {"值": value})
 
+    def _sync_aliases(self, state):
+        """声明别名先到先得；自动称呼冲突时撤销，避免后来同姓角色被认错。"""
+        rows = self.conn.execute("SELECT id, kind, name FROM entities ORDER BY id").fetchall()
+        canonical = {r["name"] for r in rows}
+        chars = [r for r in rows if r["kind"] == "character"]
+        self.conn.execute("DELETE FROM aliases WHERE source='auto'")
+        for row in chars:
+            info = (state.get("characters") or {}).get(row["name"], {})
+            aliases = info.get("aliases", []) if isinstance(info, dict) else []
+            if not isinstance(aliases, list):
+                continue
+            for alias in aliases[:3]:
+                if not isinstance(alias, str) or not 1 <= len(alias.strip()) <= 8:
+                    continue
+                alias = alias.strip()
+                if alias in canonical:
+                    continue
+                self.conn.execute("INSERT OR IGNORE INTO aliases(alias, entity_id, source) VALUES(?,?,'declared')",
+                                  (alias, row["id"]))
+        candidates = {}
+        for row in chars:
+            name = row["name"]
+            if len(name) < 2:
+                continue
+            for alias in [name[1:]] + [name[0] + title for title in AUTO_TITLES]:
+                candidates.setdefault(alias, set()).add(row["id"])
+        for alias, ids in candidates.items():
+            if len(ids) == 1 and alias not in canonical:
+                self.conn.execute("INSERT OR IGNORE INTO aliases(alias, entity_id, source) VALUES(?,?,'auto')",
+                                  (alias, next(iter(ids))))
+
     def _sync_entities(self, turn_id, turn_no, before, after, player_input="", narrative=""):
         """从本回合前后状态里同步实体、事实与提及。只做确定性逻辑，不调用模型。
 
@@ -349,6 +385,7 @@ class SaveDB:
         if before:
             self._apply_state_entities(turn_id, turn_no, before)
         self._apply_state_entities(turn_id, turn_no, after)
+        self._sync_aliases(after)
         # 提及：叙事里按已知名字精确匹配；在场/被行动对象优先于仅提及
         if not isinstance(after, dict):
             return
@@ -356,9 +393,12 @@ class SaveDB:
         player_loc = (after.get("location") or {}).get("name") or ""
         chars_before = (before or {}).get("characters") or {}
         for name, info in (after.get("characters") or {}).items():
-            if not isinstance(info, dict) or not name or name not in text:
+            if not isinstance(info, dict) or not name:
                 continue
             eid = self._entity_id("character", name, turn_id)
+            aliases = [r["alias"] for r in self.conn.execute("SELECT alias FROM aliases WHERE entity_id=?", (eid,))]
+            if not any(n in text for n in [name] + aliases):
+                continue
             role = "mentioned"
             if player_loc and (info.get("location") or "") and (
                     player_loc in info["location"] or info["location"] in player_loc):
@@ -517,7 +557,10 @@ class SaveDB:
         if latest_allowed < 1 or limit <= 0:
             return []
         entities = [dict(r) for r in self.conn.execute("SELECT id, kind, name FROM entities")]
-        names = [e["name"] for e in entities]
+        aliases = {}
+        for row in self.conn.execute("SELECT alias, entity_id FROM aliases"):
+            aliases.setdefault(row["entity_id"], []).append(row["alias"])
+        names = [e["name"] for e in entities] + [a for group in aliases.values() for a in group]
         total = self.conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         terms, matches = [], {}
         for term in _query_terms(text_in, names):
@@ -552,7 +595,7 @@ class SaveDB:
         state_names.add((state.get("location") or {}).get("name"))
         for e in entities:
             name, eid = e["name"], e["id"]
-            named = name in text_in
+            named = any(n in text_in for n in [name] + aliases.get(eid, []))
             if not named and name not in state_names:
                 continue
             weight = RECALL_NAMED_WEIGHT if named else RECALL_CONTEXT_WEIGHT

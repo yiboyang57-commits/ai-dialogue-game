@@ -1347,6 +1347,22 @@ class StorageSQLiteTests(unittest.TestCase):
         for weird in ('他说"你好"', "A-B: 测试", "100% 确定", "（）、。"):
             db.recall_for_turn(weird, st.data, 301)   # 不应抛异常
 
+    def test_alias_recall_mentions_conflicts_and_cleaning(self):
+        st = self._state()
+        world_state.apply_update(st, {"characters": {"陆青鸢": {"aliases": ["阿鸢", "", 12, "很长的非法名字超过八个字", "青鸢", "阿鸢"]}}})
+        self.assertEqual(st.data["characters"]["陆青鸢"]["aliases"], ["阿鸢", "青鸢"])
+        with storage.SaveDB(config.db_path_for("")) as db:
+            db.record_turn(1, "action", "陆青鸢送你一枚玄龟玉佩。", state=st.data)
+            db.record_turn(2, "action", "阿鸢提醒你别弄丢了。", state=st.data)
+            self.assertEqual(len(db.entity_profile("陆师姐")["recent_turns"]), 2)
+            hits = db.recall_for_turn("问陆师姐当年的事", st.data, 10)
+            self.assertTrue(any("玄龟玉佩" in x["text"] for x in hits))
+            world_state.apply_update(st, {"characters": {"陆明": {"aliases": ["阿鸢"]}}})
+            db.record_turn(3, "action", "陆明来了。", state=st.data)
+            self.assertIsNone(db.entity_profile("陆师姐"))
+            self.assertEqual(db.entity_profile("阿鸢")["name"], "陆青鸢")
+            self.assertEqual(db.entity_profile("青鸢")["name"], "陆青鸢")
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},

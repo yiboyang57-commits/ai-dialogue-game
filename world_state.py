@@ -509,6 +509,9 @@ def _sanitize_character(info, trusted=False):
         out["location"] = info["location"]
     if isinstance(info.get("status"), str):
         out["status"] = info["status"]
+    if isinstance(info.get("aliases"), list):
+        out["aliases"] = list(dict.fromkeys(a.strip() for a in info["aliases"]
+                                           if isinstance(a, str) and 1 <= len(a.strip()) <= 8))[:3]
     if trusted:
         aff = info.get("affinity")
         if isinstance(aff, (int, float)) and not isinstance(aff, bool):
