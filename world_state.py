@@ -691,12 +691,24 @@ def apply_update(state, update, power_cap=None):
         name = item["name"]
         remove_all = item.get("remove_all") is True
         qty = max(1, safe_int(item.get("quantity"), 1) or 1)
+        remaining = qty
         for entry in d["inventory"]:
-            if isinstance(entry, dict) and entry.get("name") == name:
-                if remove_all:
-                    entry["quantity"] = 0
-                else:
-                    entry["quantity"] = safe_int(entry.get("quantity"), 1) - qty
+            if not isinstance(entry, dict) or entry.get("name") != name:
+                continue
+            if remove_all:
+                entry["quantity"] = 0
+                continue
+            have = safe_int(entry.get("quantity"), 1)
+            if remaining >= have:
+                remaining -= have
+                entry["quantity"] = 0
+            else:
+                entry["quantity"] = have - remaining
+                remaining = 0
+        # P2-14：扣到 0 为止，绝不出现负数量；不足的部分记一条事件，让模型下一轮在摘要里看到，
+        # 从而不会把「钱不够」当成交易成功。
+        if not remove_all and remaining > 0:
+            state.add_event(f"{name}不足：需 {qty}，仅有 {qty - remaining}")
     d["inventory"] = [i for i in d["inventory"] if isinstance(i, dict) and safe_int(i.get("quantity"), 1) > 0]
 
     if isinstance(update.get("plot_flags"), dict):

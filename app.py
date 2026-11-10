@@ -10,7 +10,8 @@ import re
 
 import streamlit as st
 
-from config import BASE_URL, SaveCorruptError, load_api_key, save_api_key, load_model, list_save_slots
+from config import (BASE_URL, SaveCorruptError, load_api_key, save_api_key, load_model,
+                    list_save_slots, prune_temp_slots, KEEP_RECENT_ENTRIES)
 from game import Game
 from llm_client import LLMClient, LLMError
 from memory import Memory
@@ -721,9 +722,24 @@ def restore_session_slot():
     st.session_state.session_slot = slot
     st.session_state.current_slot = None if slot.startswith("临时-") else slot
     st.session_state.character_step = False
-    st.session_state.log = [{"role": "narrator", "content": "（已恢复上次的进度）\n" + state.to_player_summary()}]
+    st.session_state.log = _restored_log(state, memory, header="（已恢复上次的进度）")
     _set_slot_query(slot)
     return True
+
+
+def _restored_log(state, memory, header="（已读取存档）"):
+    """P2-18：读档后的对话区 = 状态摘要 + 最近几轮原文，而不是只剩一条摘要。"""
+    log = [{"role": "narrator", "content": header + "\n" + state.to_player_summary()}]
+    recent = getattr(memory, "recent", None) or []
+    for msg in recent[-KEEP_RECENT_ENTRIES:]:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        role = "player" if msg.get("role") == "user" else "narrator"
+        log.append({"role": role, "content": content})
+    return log
 
 
 def _save_to_named_slot(name):
@@ -753,7 +769,7 @@ def _load_named_slot(key):
     memory = Memory.load(key)
     game = Game(state, memory, st.session_state.llm)
     st.session_state.game = game
-    st.session_state.log = [{"role": "narrator", "content": "（已读取存档）\n" + state.to_player_summary()}]
+    st.session_state.log = _restored_log(state, memory)  # P2-18：接上最近几轮原文
     st.session_state.current_slot = key
     st.session_state.character_step = False
     _set_slot_query(key)
@@ -780,11 +796,7 @@ def load_into_session(state_data, memory_dict, save_key=""):
     memory = Memory.from_dict(memory_dict, save_key=save_key)
     game = Game(state, memory, st.session_state.llm)
     st.session_state.game = game
-    st.session_state.log = []
-    st.session_state.log.append({
-        "role": "narrator",
-        "content": "（已读取存档）\n" + state.to_player_summary(),
-    })
+    st.session_state.log = _restored_log(state, memory)  # P2-18：接上最近几轮原文
     st.session_state.character_step = False
     st.rerun()
 
@@ -1233,6 +1245,15 @@ if llm is None:
 # P1-12：刷新页面 / 新会话时，按地址栏的槽名自动恢复上一局
 if st.session_state.get("game") is None and not st.session_state.get("character_step"):
     restore_session_slot()
+
+# P2-17：启动时清理 7 天前的临时自动存档槽（命名存档一律不动，跳过当前会话正在用的槽）。
+# 只在会话首次运行时做一次，避免每次 rerun 都扫目录。
+if not st.session_state.get("_temp_slots_pruned"):
+    try:
+        prune_temp_slots(7, keep=st.session_state.get("session_slot"))
+    except Exception:
+        pass
+    st.session_state["_temp_slots_pruned"] = True
 
 # 侧边栏：存档管理（存档名 + 导出/导入），所有状态都可用
 render_save_sidebar()

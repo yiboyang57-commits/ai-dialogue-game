@@ -44,7 +44,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**109 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**122 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -117,9 +117,9 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 672 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 811 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
-| `app.py` | 1433 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
+| `game.py` | 712 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `world_state.py` | 823 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `app.py` | 1454 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
 | `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
 | `world_gen.py` | 485 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
@@ -128,9 +128,9 @@
 | `prompts.py` | 221 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
 | `tools.py` | 240 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
 | `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
-| `config.py` | 145 | 路径、常量、存档槽、Key 读写 |
+| `config.py` | 180 | 路径、常量、存档槽、Key 读写 |
 | `llm_client.py` | 136 | urllib 直连 DeepSeek，tool calling 解析 |
-| `memory.py` | 85 | `recent`(最近3轮) + `buffer`(待压缩) |
+| `memory.py` | 89 | `recent`(最近3轮) + `buffer`(待压缩) |
 | `dynamics.py` | 80 | 好感度公式 + 关系/属性事件表 |
 | `seasons.py` | 155 | **岁月模式**：按旬推进时间、掷小插曲/打断事件、回血与时长文案（纯函数 + 数据表） |
 | `save_bundle.py` | 57 | 网页版存档导出/导入 |
@@ -174,7 +174,7 @@ Game._play_turn(player_input, add_user)
  │
  ├─ 3. _commit()
  │     apply_update(state, update)  →  bump_turn()  →  memory 追加
- │     → needs_compression() 则 compress()（失败**静默忽略**，下轮再试，不丢本轮）
+ │     → needs_compression() 则 _maybe_compress()（失败不丢本轮；连续失败 3 次后退避 5 轮）
  │     → save()
  │
  └─ except: 回滚 state.data 与 memory 到第 0 步快照，重新抛异常
@@ -366,7 +366,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 109 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 122 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -414,7 +414,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 | 一键天命的品级权重 | `app._AUTO_TIER_WEIGHT` |
 | 系统提示的行为约束 | `prompts.SYSTEM_PROMPT` 正文 + `build_system_prompt()` 的拼接顺序 |
 | 模型能写哪些状态字段 | `tools.UPDATE_TOOL` 的 JSON Schema **（改 schema 必须同步 `world_state.apply_update`）** |
-| 上下文长度/压缩频率 | `config.py`：`KEEP_RECENT_ENTRIES=6` / `COMPRESS_EVERY_TURNS=20` / `MAX_EVENT_LOG=15` / `MAX_CHAPTER_SUMMARIES=6` |
+| 上下文长度/压缩频率 | `config.py`：`KEEP_RECENT_ENTRIES=6` / `COMPRESS_EVERY_TURNS=20` / `MAX_BUFFER_ENTRIES=80` / `COMPRESS_MAX_FAILURES=3` / `COMPRESS_RETRY_TURNS=5` / `MAX_EVENT_LOG=15` / `MAX_CHAPTER_SUMMARIES=6` |
 | 模型名/接口地址 | `config.DEFAULT_MODEL` / `config.BASE_URL`（或 `config.json` 的 `model`） |
 | 天赋候选池的生成/去重/保底 | `character_builder.py`（`POOL_TARGET_COUNTS` / `_ensure_floor` / `sample_hand`） |
 | 世界观生成与归一化 | `world_gen.py`（未知字段进 `custom` 保留） |
@@ -487,7 +487,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 109 passed，再动手。
+1. **先跑基线测试**（§1），确认 122 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -502,7 +502,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，109 passed）
+# 全量测试（唯一可靠命令，122 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动

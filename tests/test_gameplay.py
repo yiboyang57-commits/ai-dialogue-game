@@ -1,13 +1,17 @@
 """游戏结果与状态必须一致；这些回归检查不调用API、不使用玩家存档。"""
 import copy
 import json
+import math
+import os
 import random
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import combat
+import config
 import dynamics
 import judgment
 import memory
@@ -301,6 +305,64 @@ class GameplayTests(GameFixture):
             with self.assertRaises(LLMError):
                 game.run_turn("追了两天路再迎战")
         self.assertEqual(game.state.data["calendar"]["days"], 0)
+
+    # ---- P2-13：非消耗道具主动使用，加成只算一次 ----
+    def test_non_consumable_item_bonus_counted_once(self):
+        game = self.game(Replies(), hp=100)
+        game.state.data["inventory"] = [{"name": "寻宝罗盘", "quantity": 1, "description": "寻宝"}]
+        game.llm = Replies(("仔细搜寻。", {"judgment": {"type": "treasure", "subject": "山洞",
+                                                       "use_item": "寻宝罗盘"}}),
+                           ("你找到了一些线索。", {}))
+        captured = {}
+        real = judgment.resolve_judgment
+
+        def spy(jtype, factors, talents, item_bonus, pity, allow_pity=True, certain_failure=False):
+            captured["item_bonus"] = item_bonus
+            return real(jtype, factors, talents, item_bonus, pity,
+                        allow_pity=allow_pity, certain_failure=certain_failure)
+
+        with patch.object(judgment, "resolve_judgment", side_effect=spy):
+            game.run_turn("用寻宝罗盘找宝")
+        expected = judgment.ITEM_MODIFIERS["寻宝罗盘"]["treasure"]
+        self.assertAlmostEqual(captured["item_bonus"], expected)
+
+    # ---- P2-15：敌方战力的合法性检查 ----
+    def test_invalid_enemy_power_is_sanitized(self):
+        bad_values = (float("nan"), float("inf"), True, -50, 10 ** 9)
+        for bad in bad_values:
+            with self.subTest(enemy_power=bad):
+                llm = Replies(("迎战", {"combat": {"enemy_name": "怪", "enemy_power": bad,
+                                                   "action": "fight"}}),
+                              ("打完了。", {}))
+                game = self.game(llm)
+                with patch.object(random, "random", return_value=0.5):
+                    game.run_turn("迎战怪物")
+                recorded = game.state.data["last_combat"]["enemy_power"]
+                self.assertIsInstance(recorded, (int, float))
+                self.assertTrue(math.isfinite(recorded))
+                self.assertGreaterEqual(recorded, 0)
+                self.assertLessEqual(recorded, (game.state.data["combat"]["player_power"]
+                                                + 6 * game.state.data["combat"]["realm_gap"]))
+
+    def test_missing_enemy_power_falls_back_to_player_power(self):
+        llm = Replies(("迎战", {"combat": {"enemy_name": "怪", "action": "fight"}}), ("打完了。", {}))
+        game = self.game(llm)
+        with patch.object(random, "random", return_value=0.5):
+            game.run_turn("迎战")
+        self.assertEqual(game.state.data["last_combat"]["enemy_power"],
+                         game.state.data["combat"]["player_power"])
+
+    def test_dirty_combat_anchor_is_sanitized(self):
+        """P2-15 延伸：旧存档/手改数据里的脏战力锚点不能把战斗流程弄崩。"""
+        llm = Replies(("迎战", {"combat": {"enemy_name": "怪", "enemy_power": 10, "action": "fight"}}),
+                      ("打完了。", {}))
+        game = self.game(llm)
+        game.state.data["combat"] = {"player_power": "10", "realm_gap": float("nan")}
+        with patch.object(random, "random", return_value=0.5):
+            game.run_turn("迎战")
+        self.assertFalse(game.is_over)
+        self.assertIn("last_combat", game.state.data)
+
 
     def test_missing_tool_update_does_not_save_unreliable_narrative(self):
         game = self.game(Replies(("获胜了", None), ("还是没有工具", None)))
@@ -826,6 +888,23 @@ class GameplayAuthorityTests(GameFixture):
         names = [i.get("name") for i in state.data["inventory"]]
         self.assertEqual(names, ["灵石"])
 
+    # ---- P2-14：钱不够也能买 ----
+    def test_insufficient_currency_never_goes_negative(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"inventory_add": [{"name": "灵石", "quantity": 5}]})
+        world_state.apply_update(state, {"inventory_remove": [{"name": "灵石", "quantity": 50}]})
+        self.assertFalse(any(i.get("name") == "灵石" for i in state.data["inventory"]))
+        self.assertTrue(any("灵石不足" in e and "需 50" in e and "仅有 5" in e
+                            for e in state.data["event_log"]), state.data["event_log"])
+
+    def test_partial_currency_removal_keeps_remainder(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"inventory_add": [{"name": "灵石", "quantity": 5}]})
+        world_state.apply_update(state, {"inventory_remove": [{"name": "灵石", "quantity": 3}]})
+        entry = next(i for i in state.data["inventory"] if i.get("name") == "灵石")
+        self.assertEqual(entry["quantity"], 2)
+        self.assertFalse(any("灵石不足" in e for e in state.data["event_log"]))
+
     def test_apply_update_junk_fuzz_keeps_invariants(self):
         """固定种子的轻量模糊测试：畸形增量不能破坏任何系统不变量。"""
         rnd = random.Random(20261110)
@@ -1071,6 +1150,78 @@ class SeasonsTests(GameFixture):
                 game.run_block("闭关一月", 30, seclusion=True)
         self.assertEqual(game.state.data["calendar"]["days"], 0)
         self.assertEqual(game.state.data["meta"]["turn"], 0)
+
+
+class CompressionBackoffTests(GameFixture):
+    """P2-16：压缩一直失败时，缓冲有上限且不会每轮都重试昂贵的压缩调用。"""
+
+    class _NoSummaryLLM:
+        def __init__(self):
+            self.summary_calls = 0
+
+        def generate(self, messages):
+            return "叙事。", {"turn_event": "一件事"}
+
+        def summarize(self, messages):
+            self.summary_calls += 1
+            raise LLMError("模拟压缩失败")
+
+    def test_buffer_is_capped(self):
+        mem = memory.Memory()
+        for i in range(120):
+            mem.add_user("玩家" + str(i))
+            mem.add_assistant("主持" + str(i))
+        self.assertLessEqual(len(mem.buffer), config.MAX_BUFFER_ENTRIES)
+        self.assertEqual(mem.buffer[-1]["content"], "主持119")
+
+    def test_compression_backoff_after_repeated_failures(self):
+        llm = self._NoSummaryLLM()
+        game = self.game(llm)
+        attempts = []
+        for i in range(30):
+            before = llm.summary_calls
+            game.run_turn("行动" + str(i))
+            if llm.summary_calls > before:
+                attempts.append(i + 1)
+        # 第 20 轮首次触发；连续 3 次失败后退避 5 轮，第 27 轮再试。
+        self.assertEqual(attempts, [20, 21, 22, 27, 28, 29], attempts)
+        self.assertLessEqual(len(game.memory.buffer), config.MAX_BUFFER_ENTRIES)
+
+
+class TempSlotPruneTests(unittest.TestCase):
+    """P2-17：只清理 N 天前的临时槽，命名存档与当前会话槽不动。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="wanjie-prune-")
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(config, "SAVE_DIR", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _touch(self, name, days_old):
+        path = Path(self.tmp.name) / name
+        path.write_text("{}", encoding="utf-8")
+        stamp = time.time() - days_old * 86400
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_prune_only_removes_old_temp_slots(self):
+        old_state = self._touch("state_临时-111111.json", 9)
+        old_hist = self._touch("history_临时-111111.json", 9)
+        fresh_state = self._touch("state_临时-222222.json", 1)
+        named_old = self._touch("state_alice.json", 30)
+        removed = config.prune_temp_slots(7)
+        self.assertEqual(removed, ["临时-111111"])
+        self.assertFalse(old_state.exists())
+        self.assertFalse(old_hist.exists())
+        self.assertTrue(fresh_state.exists())
+        self.assertTrue(named_old.exists())  # 命名存档永不清理
+
+    def test_keep_protects_current_session_slot(self):
+        active = self._touch("state_临时-333333.json", 30)
+        removed = config.prune_temp_slots(7, keep="临时-333333")
+        self.assertEqual(removed, [])
+        self.assertTrue(active.exists())
 
 
 if __name__ == "__main__":

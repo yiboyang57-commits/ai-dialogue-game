@@ -61,6 +61,7 @@ class ChatUITests(unittest.TestCase):
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'))
         app.session_state['game'] = game
         app.session_state['llm'] = game.llm
+        app.session_state['_temp_slots_pruned'] = True  # 测试不清理真实 save/
         app.session_state['log'] = [
             {'role': 'narrator', 'content': '开场故事'},
             {'role': 'player', 'content': '早先行动'},
@@ -175,17 +176,24 @@ class SlotRestoreUITests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _write_slot(self, key, turn):
+    def _write_slot(self, key, turn, recent=None):
         state = WorldState(save_key=key)
         state.apply_template({"world": {"background": "修仙"},
                               "player": {"name": "林舟", "attributes": {"hp": 100, "max_hp": 100}}})
         state.data["meta"]["turn"] = turn
         state.save()
-        Memory(save_key=key).save()
+        mem = Memory(save_key=key)
+        if recent:
+            mem.recent = [{"role": role, "content": text} for role, text in recent]
+        mem.save()
+
+    def _messages(self, app):
+        return [m.value for m in app.markdown if m.value.startswith('<div class="message">')]
 
     def _app(self):
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'))
         app.session_state['llm'] = object()
+        app.session_state['_temp_slots_pruned'] = True  # 测试不清理真实 save/
         return app
 
     @patch('config.list_save_slots', return_value=[])
@@ -244,6 +252,43 @@ class SlotRestoreUITests(unittest.TestCase):
         self.assertNotIn('slot', fake)
         self.assertNotIn('game', app.session_state)
         self.assertNotIn('session_slot', app.session_state)
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_restore_shows_recent_dialogue(self, _slots):
+        """P2-18：刷新恢复后，对话区要接上最近几轮原文，而不是只剩状态摘要。"""
+        self._write_slot('临时-424242', turn=3,
+                         recent=[("user", "早先玩家说的话"), ("assistant", "早先主持人的话")])
+        app = self._app()
+        fake = _FakeQueryParams(slot='临时-424242')
+        with patch.object(st, 'query_params', fake):
+            app.run()
+        self.assertFalse(app.exception)
+        joined = "\n".join(self._messages(app))
+        self.assertIn("早先玩家说的话", joined)
+        self.assertIn("早先主持人的话", joined)
+
+    @patch('config.list_save_slots', return_value=[{"key": "命名档", "name": "命名档", "updated": ""}])
+    def test_loading_named_slot_shows_recent_dialogue(self, _slots):
+        """P2-18：从「继续存档」读命名档时同样接上最近几轮。"""
+        self._write_slot('命名档', turn=2, recent=[("user", "上次我去了集市")])
+        app = self._app()
+        with patch.object(st, 'query_params', _FakeQueryParams()):
+            app.run()
+            next(b for b in app.button if b.label == '命名档').click().run()
+        self.assertFalse(app.exception)
+        self.assertIn("上次我去了集市", "\n".join(self._messages(app)))
+
+    @patch('config.prune_temp_slots', return_value=[])
+    @patch('config.list_save_slots', return_value=[])
+    def test_temp_slots_pruned_once_per_session(self, _slots, prune):
+        """P2-17：启动时清理一次临时槽，rerun 不重复清理。"""
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'))
+        app.session_state['llm'] = object()
+        app.run()
+        self.assertEqual(prune.call_count, 1)
+        app.run()
+        self.assertEqual(prune.call_count, 1)
+        self.assertFalse(app.exception)
 
 
 if __name__ == '__main__':

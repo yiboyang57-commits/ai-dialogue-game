@@ -37,6 +37,7 @@ class CharacterPoolUITests(unittest.TestCase):
                         for i in range(6)] for key in cb.POOL_TARGET_COUNTS}
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"))
         app.session_state["llm"] = llm
+        app.session_state["_temp_slots_pruned"] = True  # 测试不清理真实 save/
         app.session_state["character_step"] = True
         app.session_state["template"] = {"world": {"background": "测试修仙世界"}}
         app.session_state["character_pool"] = legacy
@@ -86,6 +87,7 @@ class CharacterPoolUITests(unittest.TestCase):
         llm = PoolLLM()
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"))
         app.session_state["llm"] = llm
+        app.session_state["_temp_slots_pruned"] = True  # 测试不清理真实 save/
         app.session_state["character_step"] = True
         app.session_state["template"] = {"world": {"background": "测试修仙世界"}}
         app.run(timeout=15)

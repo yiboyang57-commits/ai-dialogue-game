@@ -7,7 +7,7 @@ import combat as combat_module
 import dynamics as dynamics_module
 import judgment as judgment_module
 import seasons
-from config import MAX_CHAPTER_SUMMARIES
+from config import MAX_CHAPTER_SUMMARIES, COMPRESS_MAX_FAILURES, COMPRESS_RETRY_TURNS
 from gm_rules import load_rules
 from llm_client import LLMError
 from memory import Memory
@@ -68,6 +68,9 @@ class Game:
         self.rules = rules if rules is not None else load_rules()
         self.system_prompt = build_system_prompt(state, self.rules)
         self._block_elapsed = 0  # 本轮若是岁月模式结算，记下经过天数（用于放宽战力成长上限）
+        # P2-16：压缩失败退避状态（不持久化，重开进程后重新计数即可）
+        self._compress_failures = 0
+        self._compress_skip_until = 0
 
     def _refresh_system_prompt(self):
         # 战力/天赋等锚定可能变化，每轮重建，保证发给模型的是最新值
@@ -120,12 +123,29 @@ class Game:
             self.memory.add_user(player_input)
         self.memory.add_assistant(text)
         if self.memory.needs_compression():
-            try:
-                self.compress()
-            except Exception:
-                # 压缩失败（含超时、断线等任何异常）不抹掉本轮，也不清空待压缩内容，下轮再尝试。
-                pass
+            self._maybe_compress()
         self.save()
+
+    def _maybe_compress(self):
+        """P2-16：压缩失败静默重试会导致缓冲无限增长、且每轮多一次昂贵调用。
+
+        连续失败达 `COMPRESS_MAX_FAILURES` 次后先退避 `COMPRESS_RETRY_TURNS` 轮再试；
+        失败时本轮照常提交（不清缓冲），下次再压。
+        """
+        turn = self.state.data.get("meta", {}).get("turn", 0)
+        if turn < self._compress_skip_until:
+            return
+        try:
+            self.compress()
+        except Exception:
+            # 压缩失败（含超时、断线等任何异常）不抹掉本轮，也不清空待压缩内容。
+            self._compress_failures += 1
+            if self._compress_failures >= COMPRESS_MAX_FAILURES:
+                self._compress_failures = 0
+                self._compress_skip_until = turn + COMPRESS_RETRY_TURNS
+            return
+        self._compress_failures = 0
+        self._compress_skip_until = 0
 
     # ---- 判定（战斗 + 非战斗）统一入口 ----
     @staticmethod
@@ -333,14 +353,29 @@ class Game:
         req = update.get("combat")
         context_update = self._prepare_roll(update)
         anchor = self.state.data.get("combat") or {}
-        player_power = anchor.get("player_power") or 0
-        realm_gap = anchor.get("realm_gap") or 5
+        player_power = anchor.get("player_power")
+        # 战力锚定也要防脏数据（旧存档 / 外部手改）：非有限正数一律按默认值处理
+        if not (isinstance(player_power, (int, float)) and not isinstance(player_power, bool)
+                and math.isfinite(player_power) and player_power >= 0):
+            player_power = 10
+        realm_gap = anchor.get("realm_gap")
+        if not (isinstance(realm_gap, (int, float)) and not isinstance(realm_gap, bool)
+                and math.isfinite(realm_gap) and realm_gap > 0):
+            realm_gap = 5
         curve = anchor.get("curve") or "realm_gap"
         params = combat_module.curve_params(curve)
 
+        # P2-15：敌方战力也要做合法性检查——排除 bool / NaN / ±inf，钳制到
+        # [0, 玩家战力 + 6×realm_gap]，非法时退回玩家战力（NaN 会让 round() 直接炸整轮）。
         enemy_power = req.get("enemy_power")
-        if not isinstance(enemy_power, (int, float)):
+        max_enemy_power = player_power + 6 * realm_gap
+        if (not isinstance(enemy_power, (int, float)) or isinstance(enemy_power, bool)
+                or not math.isfinite(enemy_power)):
             enemy_power = player_power
+        else:
+            enemy_power = max(0, min(float(enemy_power), max_enemy_power))
+            if enemy_power == int(enemy_power):
+                enemy_power = int(enemy_power)
         action = req.get("action") or "fight"
         talents = self._talent_entries()
 
@@ -363,6 +398,7 @@ class Game:
         hp = self._get_hp()
         result = combat_module.resolve(player_power, enemy_power, realm_gap, action, params, hp, mods,
                                        max_hp=self._get_max_hp())
+        result["enemy_power"] = enemy_power  # 记录清洗后的值，避免 last_combat 存下 NaN/天文数字
         nonlethal_down = result["player_down"] and req.get("lethal") is False
         protection = None
         if nonlethal_down:
@@ -400,7 +436,7 @@ class Game:
         attrs["hp"] = result["player_hp_after"]
         d["last_combat"] = {
             "enemy_name": req.get("enemy_name"),
-            "enemy_power": req.get("enemy_power"),
+            "enemy_power": result.get("enemy_power", req.get("enemy_power")),
             "outcome": result["outcome"],
             "enemy_defeated": result["enemy_defeated"],
             "player_hp_after": result["player_hp_after"],
@@ -434,8 +470,12 @@ class Game:
             item_bonus += im.get(jtype, 0.0)
             if im.get("consumable"):
                 self._consume_item(use_item)
-        # 常驻道具被动加成（如“寻宝罗盘”）
+        # 常驻道具被动加成（如“寻宝罗盘”）。P2-13：主动使用的那件已经算过一次，不再重复计入。
         for inv in self.state.data.get("inventory") or []:
+            if not isinstance(inv, dict):
+                continue
+            if use_item and inv.get("name") == use_item:
+                continue
             im = judgment_module.item_mods(inv.get("name"))
             if not im.get("consumable") and im.get(jtype):
                 item_bonus += im[jtype]

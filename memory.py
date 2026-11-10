@@ -7,7 +7,8 @@
 """
 import os
 
-from config import SAVE_DIR, KEEP_RECENT_ENTRIES, COMPRESS_EVERY_TURNS, save_slot_suffix, write_json_atomic, read_json_save, SaveCorruptError
+from config import (SAVE_DIR, KEEP_RECENT_ENTRIES, COMPRESS_EVERY_TURNS, MAX_BUFFER_ENTRIES,
+                    save_slot_suffix, write_json_atomic, read_json_save, SaveCorruptError)
 
 
 class Memory:
@@ -32,6 +33,9 @@ class Memory:
     def _trim(self):
         if len(self.recent) > KEEP_RECENT_ENTRIES:
             self.recent = self.recent[-KEEP_RECENT_ENTRIES:]
+        # P2-16：压缩一直失败时缓冲不能无限增长，超出上限丢最旧的
+        if len(self.buffer) > MAX_BUFFER_ENTRIES:
+            self.buffer = self.buffer[-MAX_BUFFER_ENTRIES:]
 
     # ---- 压缩判定与格式化 ----
     def needs_compression(self):

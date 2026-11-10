@@ -92,9 +92,44 @@ def list_save_slots():
             slots.append({"key": key, "name": name, "updated": updated})
     return slots
 
+
+def prune_temp_slots(days=7, keep=None):
+    """P2-17：删除 N 天前的临时自动存档槽（`临时-xxxxxx`），返回删除的槽名列表。
+
+    只清理临时槽，命名存档一律不动；`keep` 用于跳过当前会话正在用的槽。
+    删除失败（权限/占用）时静默跳过，不影响启动。
+    """
+    import time
+    removed = []
+    if not os.path.isdir(SAVE_DIR):
+        return removed
+    cutoff = time.time() - max(0, days) * 86400
+    for fn in sorted(os.listdir(SAVE_DIR)):
+        if not (fn.startswith("state_临时-") and fn.endswith(".json")):
+            continue
+        key = fn[len("state_"):-len(".json")]
+        if keep and key == keep:
+            continue
+        path = os.path.join(SAVE_DIR, fn)
+        try:
+            if os.path.getmtime(path) > cutoff:
+                continue
+        except OSError:
+            continue
+        removed.append(key)
+        for target in (path, os.path.join(SAVE_DIR, "history_" + key + ".json")):
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+    return removed
+
 # ---- 记忆与历史压缩参数 ----
 KEEP_RECENT_ENTRIES = 6    # 每轮(玩家+主持人)2条，这里保留最近3轮完整对话
 COMPRESS_EVERY_TURNS = 20  # 每 20 轮自动压缩一次历史
+MAX_BUFFER_ENTRIES = 80           # P2-16：待压缩缓冲最多保留多少条（超出丢最旧）
+COMPRESS_MAX_FAILURES = 3         # P2-16：连续压缩失败多少次后开始退避
+COMPRESS_RETRY_TURNS = 5          # P2-16：退避时隔多少轮再试
 MAX_EVENT_LOG = 15         # 事件日志最多保留条数
 MAX_SUMMARY_CHARS = 400    # 故事摘要建议最大长度（仅作提示用）
 MAX_CHAPTER_SUMMARIES = 6  # 章节摘要最多保留条数（长局记忆，超出滚动淘汰）
