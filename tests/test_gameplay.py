@@ -1404,6 +1404,55 @@ class StorageSQLiteTests(unittest.TestCase):
             fact = db.entity_profile("阿山")["facts"][0]
             self.assertLessEqual(fact["valid_from_turn"], fact["valid_to_turn"])
 
+    def test_exact_replay_fifty_mixed_game_turns(self):
+        st = self._state()
+        st.data["world"]["background"] = "不变的世界设定。" * 500
+        game = Game(st, memory.Memory(), Replies(), rules=[])
+        full_bytes = 0
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}), patch.object(random, "random", return_value=0.99):
+            for turn in range(1, 51):
+                if turn % 3 == 0:
+                    game.llm = Replies(("切磋", {"combat": {"enemy_name": "教习", "enemy_power": 100, "action": "fight", "lethal": False}}),
+                                       ("切磋结束。", {}))
+                    game.run_turn("切磋")
+                elif turn % 3 == 1:
+                    game.llm = Replies(("尝试", {"judgment": {"type": "action"}}), ("尝试结束。", {"inventory_add": [{"name": "石头", "quantity": 1}]}))
+                    game.run_turn("尝试")
+                else:
+                    game.llm = Replies(("休养一旬。", {"turn_event": "休养"}))
+                    game.run_block("休养", 10)
+                persisted = json.loads(Path(self.tmp.name, "state.json").read_text())
+                full_bytes += len(storage._dump(persisted).encode())
+                with storage.SaveDB(config.db_path_for("")) as db:
+                    self.assertEqual(db.load_state(), persisted)
+            with storage.SaveDB(config.db_path_for("")) as db:
+                # 最后一轮正好有快照，删除它后再核对，防止只验证快照而没测增量。
+                db.conn.execute("DELETE FROM snapshots WHERE turn_id=(SELECT MAX(id) FROM turns)")
+                self.assertEqual(db.load_state(), persisted)
+                cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(state_changes)")}
+                self.assertNotIn("state_after_json", cols)
+                saved_bytes = db.conn.execute("SELECT SUM(length(CAST(diff_json AS BLOB))) FROM state_changes").fetchone()[0]
+                saved_bytes += db.conn.execute("SELECT SUM(length(CAST(state_json AS BLOB))) FROM snapshots").fetchone()[0]
+                self.assertLess(saved_bytes, full_bytes * 0.4)
+
+    def test_full_state_column_migrates_to_deltas(self):
+        path = config.db_path_for("")
+        st = self._state().data
+        with storage.SaveDB(path) as db:
+            db.record_turn(1, "action", "开始", state=st)
+            after = copy.deepcopy(st)
+            after["player"]["life_status"] = "dead"
+            after["player"]["attributes"]["hp"] = 0
+            del after["plot_flags"]
+            db.record_turn(2, "action", "结束", state=after)
+            db.conn.execute("ALTER TABLE state_changes ADD COLUMN state_after_json TEXT")
+            db.conn.execute("UPDATE state_changes SET state_after_json=? WHERE turn_id=1", (storage._dump(st),))
+            db.conn.execute("UPDATE state_changes SET state_after_json=? WHERE turn_id=2", (storage._dump(after),))
+        with storage.SaveDB(path) as db:
+            self.assertEqual(db.load_state(), after)
+            self.assertEqual(db.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertNotIn("state_after_json", {r["name"] for r in db.conn.execute("PRAGMA table_info(state_changes)")})
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},

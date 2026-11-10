@@ -5,11 +5,12 @@
 - 每回合追加一条 `turns` + 一条 `state_changes`（清洗后的增量）；
 - 每 10 回合写一份完整 `snapshots`；
 - 战斗/判定的掷骰记录写入 `rolls`，方便复盘「这一下为什么成败」；
-- 「当前状态」= 最近快照 + 之后逐回合的 state_changes 用 `apply_update` 叠回去。
+- 「当前状态」= 最近快照 + 之后逐回合的确定性 JSON 差异（含代码侧结算）。
 
 开关：环境变量 `WANJIE_STORAGE=sqlite` 时才开启双写（默认关闭，行为与旧版完全一致）。
 写库失败一律静默（由 game 侧兜底），绝不影响游戏本身。
 """
+import copy
 import json
 import os
 import re
@@ -51,7 +52,6 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE TABLE IF NOT EXISTS state_changes (
   turn_id INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
   update_json TEXT NOT NULL,
-  state_after_json TEXT,                   -- 提交后的完整状态（含代码侧改动：回合号/日历/死亡）
   diff_json TEXT
 );
 CREATE TABLE IF NOT EXISTS rolls (
@@ -135,6 +135,38 @@ def _fts_phrase(text):
     return '"' + str(text).replace('"', '""') + '"'
 
 
+def _state_diff(before, after, path=()):
+    """记录已结算状态的实际差异；列表原样替换，字典递归，支持键删除。"""
+    if isinstance(before, dict) and isinstance(after, dict):
+        ops = [{"path": list(path + (key,)), "remove": True} for key in before if key not in after]
+        for key, value in after.items():
+            if key not in before:
+                ops.append({"path": list(path + (key,)), "value": value})
+            else:
+                ops.extend(_state_diff(before[key], value, path + (key,)))
+        return ops
+    if before != after or type(before) is not type(after):
+        return [{"path": list(path), "value": after}]
+    return []
+
+
+def _apply_diff(data, ops):
+    """只回放已发生的代码结果，不重新掷骰、不重跑成长钳制。"""
+    for op in ops:
+        path = op["path"]
+        if not path:
+            data = copy.deepcopy(op["value"])
+            continue
+        target = data
+        for key in path[:-1]:
+            target = target[key]
+        if op.get("remove"):
+            target.pop(path[-1], None)
+        else:
+            target[path[-1]] = copy.deepcopy(op["value"])
+    return data
+
+
 class SaveDB:
     """一个存档对应的 SQLite 事件库。"""
 
@@ -175,6 +207,9 @@ class SaveDB:
                     self.conn.execute("ALTER TABLE entities_v4 RENAME TO entities")
             finally:
                 self.conn.execute("PRAGMA foreign_keys=ON")
+        change_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(state_changes)")}
+        if "state_after_json" in change_cols:
+            self._migrate_state_deltas()
         # 修正旧库曾写出的反向有效期，不能把无效区间继续传播到召回。
         self.conn.execute("UPDATE facts SET valid_from_turn=valid_to_turn "
                           "WHERE valid_to_turn < valid_from_turn")
@@ -200,6 +235,31 @@ class SaveDB:
                         "SELECT id, COALESCE(player_input,''), narrative, COALESCE(summary,'') FROM turns")
                 except sqlite3.Error:
                     self.fts_available = False
+
+    def _migrate_state_deltas(self):
+        """旧库全量状态转换为精确差异；保留已有快照并移除重复的全量列。"""
+        previous = None
+        with self.conn:
+            rows = self.conn.execute("SELECT c.*, s.state_json FROM state_changes c "
+                                     "LEFT JOIN snapshots s ON s.turn_id=c.turn_id ORDER BY c.turn_id").fetchall()
+            for row in rows:
+                full = row["state_after_json"] or row["state_json"]
+                if full:
+                    current = json.loads(full)
+                    if previous is None:
+                        self.conn.execute("INSERT OR REPLACE INTO snapshots(turn_id,state_json) VALUES(?,?)",
+                                          (row["turn_id"], _dump(current)))
+                    self.conn.execute("UPDATE state_changes SET diff_json=? WHERE turn_id=?",
+                                      (_dump(_state_diff(previous or {}, current)), row["turn_id"]))
+                    previous = current
+                elif previous is not None:
+                    import world_state
+                    previous = world_state.apply_update(world_state.WorldState(previous), json.loads(row["update_json"])).data
+            self.conn.execute("CREATE TABLE state_changes_delta (turn_id INTEGER PRIMARY KEY REFERENCES turns(id) "
+                              "ON DELETE CASCADE, update_json TEXT NOT NULL, diff_json TEXT)")
+            self.conn.execute("INSERT INTO state_changes_delta SELECT turn_id,update_json,diff_json FROM state_changes")
+            self.conn.execute("DROP TABLE state_changes")
+            self.conn.execute("ALTER TABLE state_changes_delta RENAME TO state_changes")
 
     def _try_create_fts(self):
         """SQLite >= 3.34 才有 trigram 分词器；建不成就退回 LIKE 检索。"""
@@ -249,6 +309,7 @@ class SaveDB:
         if isinstance(state, dict):
             calendar_days = (state.get("calendar") or {}).get("days")
         with self.conn:  # 事务：任何一步失败整轮回滚
+            previous = self.load_state() if isinstance(state, dict) else None
             cur = self.conn.execute(
                 "INSERT INTO turns(turn_no, kind, player_input, narrative, summary, location, "
                 "game_time, calendar_days, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -257,14 +318,13 @@ class SaveDB:
                  location, game_time, calendar_days, _now()))
             turn_id = cur.lastrowid
             self.conn.execute(
-                "INSERT INTO state_changes(turn_id, update_json, state_after_json, diff_json) "
-                "VALUES(?,?,?,?)",
-                (turn_id, _dump(update), _dump(state) if isinstance(state, dict) else None, None))
+                "INSERT INTO state_changes(turn_id, update_json, diff_json) VALUES(?,?,?)",
+                (turn_id, _dump(update), _dump(_state_diff(previous or {}, state)) if isinstance(state, dict) else None))
             if roll:
                 self.conn.execute(
                     "INSERT INTO rolls(turn_id, kind, payload_json, created_at) VALUES(?,?,?,?)",
                     (turn_id, str(roll.get("kind") or "judgment"), _dump(roll.get("payload")), _now()))
-            if isinstance(state, dict) and (turn_id == 1 or turn_no % max(1, snapshot_every) == 0):
+            if isinstance(state, dict) and (previous is None or kind == "gap" or turn_no % max(1, snapshot_every) == 0):
                 self.conn.execute("INSERT OR REPLACE INTO snapshots(turn_id, state_json) VALUES(?,?)",
                                   (turn_id, _dump(state)))
             if self.fts_available:
@@ -527,30 +587,18 @@ class SaveDB:
         return row["turn_id"], json.loads(row["state_json"])
 
     def load_state(self, save_key=""):
-        """重建 state dict（没有数据返回 None）。
-
-        优先用最后一回合的 `state_after_json`（完整、精确，包含回合号/日历/死亡等代码侧改动）；
-        老库没有该列时退回「最近快照 + 之后逐回合增量」回放。
-        """
-        import world_state
-        row = self.conn.execute(
-            "SELECT state_after_json FROM state_changes ORDER BY turn_id DESC LIMIT 1").fetchone()
-        if row and row["state_after_json"]:
-            return json.loads(row["state_after_json"])
+        """最近快照 + 精确差异，逐字段恢复已提交状态，包括代码结算和删除。"""
         snap_id, data = self.latest_snapshot()
         if data is None:
             return None
-        state = world_state.WorldState(data, save_key=save_key)
-        rows = self.conn.execute(
-            "SELECT update_json FROM state_changes WHERE turn_id > ? ORDER BY turn_id",
-            (snap_id,)).fetchall()
-        for row in rows:
-            try:
-                update = json.loads(row["update_json"])
-            except json.JSONDecodeError:
-                continue
-            world_state.apply_update(state, update)
-        return state.data
+        for row in self.conn.execute("SELECT update_json, diff_json FROM state_changes WHERE turn_id>? ORDER BY turn_id", (snap_id,)):
+            if row["diff_json"] is not None:
+                data = _apply_diff(data, json.loads(row["diff_json"]))
+            else:
+                # 兼容只有模型增量的早期迁移记录；新状态记录始终写精确差异。
+                import world_state
+                data = world_state.apply_update(world_state.WorldState(data, save_key=save_key), json.loads(row["update_json"])).data
+        return data
 
     def list_rolls(self, limit=20):
         rows = self.conn.execute(
