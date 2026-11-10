@@ -1,10 +1,14 @@
 """网页对话按时间排列，重试与终局沿用同一个输入流程。"""
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from game import Game
+import memory
 from memory import Memory
+import streamlit as st
+import world_state
 from world_state import WorldState
 
 try:
@@ -149,6 +153,57 @@ class ChatUITests(unittest.TestCase):
         # 继续时按剩余天数结算，结算后按钮消失
         self.assertEqual(game.block_calls, [('在洞府修炼', 350, True)])
         self.assertFalse(any(b.label.startswith('继续：') for b in app.button))
+
+
+class _FakeQueryParams(dict):
+    """模拟 st.query_params（Streamlit 1.62 的 AppTest 不直接暴露地址栏参数）。"""
+
+
+@unittest.skipIf(AppTest is None, '页面检查需要安装 Streamlit')
+class SlotRestoreUITests(unittest.TestCase):
+    """P1-12：刷新页面（新会话）后，按地址栏里的槽名恢复上一局进度。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='wanjie-ui-slot-')
+        self.addCleanup(self.tmp.cleanup)
+        for module in (memory, world_state):
+            patcher = patch.object(module, 'SAVE_DIR', self.tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _write_slot(self, key, turn):
+        state = WorldState(save_key=key)
+        state.apply_template({"world": {"background": "修仙"},
+                              "player": {"name": "林舟", "attributes": {"hp": 100, "max_hp": 100}}})
+        state.data["meta"]["turn"] = turn
+        state.save()
+        Memory(save_key=key).save()
+
+    def _app(self):
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'))
+        app.session_state['llm'] = object()
+        return app
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_refresh_restores_game_from_query_slot(self, _slots):
+        self._write_slot('临时-424242', turn=3)
+        app = self._app()
+        with patch.object(st, 'query_params', _FakeQueryParams(slot='临时-424242')):
+            app.run()
+        self.assertFalse(app.exception)
+        game = app.session_state['game'] if 'game' in app.session_state else None
+        self.assertIsNotNone(game)
+        self.assertEqual(game.state.data['meta']['turn'], 3)
+        self.assertEqual(app.session_state['session_slot'], '临时-424242')
+        self.assertTrue(any('已恢复上次的进度' in m.value for m in app.markdown))
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_stale_slot_does_not_block_fresh_start(self, _slots):
+        app = self._app()
+        with patch.object(st, 'query_params', _FakeQueryParams(slot='临时-999999')):
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertNotIn('game', app.session_state)
 
 
 if __name__ == '__main__':

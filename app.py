@@ -662,11 +662,60 @@ def random_think():
     return random.choice(THINKING_PHRASES)
 
 
+def _set_slot_query(slot):
+    """把当前槽名写进地址栏（?slot=…），刷新页面后能靠它找回这一局（P1-12）。"""
+    try:
+        if slot:
+            st.query_params["slot"] = slot
+        else:
+            st.query_params.pop("slot", None)
+    except Exception:
+        pass
+
+
+def _slot_from_query():
+    """地址栏里的存档槽名；没有就返回 None。"""
+    try:
+        slot = st.query_params.get("slot")
+    except Exception:
+        return None
+    return slot.strip() if isinstance(slot, str) and slot.strip() else None
+
+
 def session_slot():
-    """本会话的临时自动存档槽（不同玩家互不覆盖，且不会出现在「继续存档」列表里）。"""
+    """本会话的临时自动存档槽（不同玩家互不覆盖，且不会出现在「继续存档」列表里）。
+
+    P1-12：槽名同时写进地址栏。浏览器刷新、手机切后台被回收后，新会话仍能靠它恢复这一局。
+    """
     if "session_slot" not in st.session_state:
-        st.session_state.session_slot = "临时-" + str(random.randint(100000, 999999))
+        slot = _slot_from_query()
+        st.session_state.session_slot = slot or ("临时-" + str(random.randint(100000, 999999)))
+    _set_slot_query(st.session_state.session_slot)
     return st.session_state.session_slot
+
+
+def restore_session_slot():
+    """刷新/新会话时按地址栏（或待恢复槽名）读档进会话（P1-12）。成功返回 True。"""
+    if st.session_state.get("game") is not None:
+        return False
+    slot = st.session_state.pop("restore_slot", None) or _slot_from_query()
+    if not slot:
+        return False
+    try:
+        state = WorldState.load(slot)
+    except SaveCorruptError:
+        return False
+    if state is None:
+        return False
+    memory = Memory.load(slot)
+    game = Game(state, memory, st.session_state.llm)
+    st.session_state.game = game
+    st.session_state.session_slot = slot
+    st.session_state.current_slot = None if slot.startswith("临时-") else slot
+    st.session_state.character_step = False
+    st.session_state.log = [{"role": "narrator", "content": "（已恢复上次的进度）\n" + state.to_player_summary()}]
+    _set_slot_query(slot)
+    return True
 
 
 def _save_to_named_slot(name):
@@ -679,6 +728,7 @@ def _save_to_named_slot(name):
     game.memory.save_key = key
     game.save()
     st.session_state.current_slot = key
+    _set_slot_query(key)  # 保存成命名存档后，刷新页面直接回到这个存档
     return True
 
 
@@ -698,6 +748,7 @@ def _load_named_slot(key):
     st.session_state.log = [{"role": "narrator", "content": "（已读取存档）\n" + state.to_player_summary()}]
     st.session_state.current_slot = key
     st.session_state.character_step = False
+    _set_slot_query(key)
     st.rerun()
 
 
@@ -709,8 +760,9 @@ def _stop_world():
               "turn_error", "failed_input",
               "ask_stop", "saving", "stop_after_save", "template",
               "talent_hand", "physique_hand", "gf_hand", "talent_lock", "physique_lock", "gf_lock",
-              "talent_sel", "physique_sel", "gf_sel"):
+              "talent_sel", "physique_sel", "gf_sel", "session_slot"):
         st.session_state.pop(k, None)
+    _set_slot_query(None)  # 停止世界后清掉地址栏槽名，刷新不会再自动读回这一局
     st.rerun()
 
 
@@ -1169,6 +1221,10 @@ if llm is None:
         st.session_state.llm = LLMClient(api_key=key.strip(), model=load_model() or "deepseek-chat", base_url=BASE_URL)
         st.rerun()
     st.stop()
+
+# P1-12：刷新页面 / 新会话时，按地址栏的槽名自动恢复上一局
+if st.session_state.get("game") is None and not st.session_state.get("character_step"):
+    restore_session_slot()
 
 # 侧边栏：存档管理（存档名 + 导出/导入），所有状态都可用
 render_save_sidebar()
