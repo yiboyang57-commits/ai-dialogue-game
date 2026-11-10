@@ -489,6 +489,92 @@ class GameplayTuningTests(unittest.TestCase):
         self.assertIn("旧人0", summary)
 
 
+class GameplayAuthorityTests(GameFixture):
+    """P0-2：战力 / 好感 / 相识回合 / 生命上限是系统独占字段，模型一句话改不动。"""
+
+    def _fresh(self):
+        state = world_state.WorldState()
+        state.apply_template({
+            "world": {"background": "修仙"},
+            "player": {"name": "林舟", "attributes": {"hp": 100, "max_hp": 100}},
+            "characters": {"甲": {"description": "路人", "attitude_toward_player": "友善"}},
+        })
+        return state
+
+    def test_model_cannot_write_affinity_or_met_turn(self):
+        state = self._fresh()
+        before = state.data["characters"]["甲"]["affinity"]
+        world_state.apply_update(state, {"characters": {"甲": {
+            "affinity": 9999, "met_turn": -1000, "description": "换了描述"}}})
+        self.assertEqual(state.data["characters"]["甲"]["affinity"], before)
+        self.assertEqual(state.data["characters"]["甲"]["met_turn"], 0)
+        self.assertEqual(state.data["characters"]["甲"]["description"], "换了描述")  # 合法字段照常更新
+
+    def test_new_character_met_turn_is_current_turn(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"characters": {"新人": {
+            "description": "刚认识", "affinity": 9999, "met_turn": -1000}}})
+        char = state.data["characters"]["新人"]
+        self.assertEqual(char["met_turn"], 0)
+        self.assertLessEqual(char["affinity"], 100)
+
+    def test_relationship_events_still_move_affinity(self):
+        state = self._fresh()
+        before = state.data["characters"]["甲"]["affinity"]
+        world_state.apply_update(state, {"relationship_events": [{"subject": "甲", "event": "赠礼"}]})
+        self.assertGreater(state.data["characters"]["甲"]["affinity"], before)
+
+    def test_model_cannot_set_power_directly(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"player_power": 1e9})
+        power = state.data["combat"]["player_power"]
+        self.assertGreater(power, 10)          # 合法的小幅成长仍然生效
+        self.assertLessEqual(power, 10 + 5)    # 但只允许 +1 个 realm_gap
+
+    def test_invalid_power_is_ignored(self):
+        for bad in (float("inf"), float("nan"), -5, 0, True):
+            with self.subTest(power=bad):
+                state = self._fresh()
+                world_state.apply_update(state, {"player_power": bad})
+                self.assertEqual(state.data["combat"]["player_power"], 10)
+
+    def test_block_settlement_relaxes_power_cap_by_days(self):
+        llm = Replies(("你闭关修炼。", {"player_power": 1000}))
+        game = self.game(llm)
+        fixed = {"planned": 360, "elapsed": 360, "remaining": 0, "seclusion": True,
+                 "flavors": [], "interrupt": None}
+        with patch.object(seasons, "roll_block", return_value=fixed):
+            game.run_block("闭关", 360)  # 360 天 → realm_gap × max(1, 360/180) = 10
+        power = game.state.data["combat"]["player_power"]
+        self.assertGreater(power, 15)   # 比场景回合的 +5 更宽
+        self.assertLessEqual(power, 20)
+
+    def test_model_cannot_set_max_hp_directly(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"player_attributes": {"max_hp": 10 ** 9}})
+        self.assertLessEqual(state.data["player"]["attributes"]["max_hp"], 150)
+
+    def test_max_hp_cannot_collapse_in_one_turn(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"player_attributes": {"max_hp": 1}})
+        self.assertGreaterEqual(state.data["player"]["attributes"]["max_hp"], 50)
+
+    def test_hp_is_capped_by_lowered_max_hp(self):
+        state = self._fresh()
+        state.data["player"]["attributes"]["hp"] = 100
+        world_state.apply_update(state, {"player_attributes": {"max_hp": 50}})
+        self.assertLessEqual(state.data["player"]["attributes"]["hp"],
+                             state.data["player"]["attributes"]["max_hp"])
+
+    def test_combat_damage_scales_with_max_hp(self):
+        params = combat.curve_params("realm_gap")
+        with patch.object(random, "random", return_value=0.999999):
+            small = combat.resolve(10, 10, 5, "fight", params, 100, max_hp=100)
+            big = combat.resolve(10, 10, 5, "fight", params, 500, max_hp=200)
+        self.assertEqual(small["player_damage"], 20)          # 20% × 100
+        self.assertEqual(big["player_damage"], 40)            # 20% × 200
+
+
 class CombatDamageTests(unittest.TestCase):
     """P0-1：胜利伤害随优势衰减；胜利永不致死。"""
 

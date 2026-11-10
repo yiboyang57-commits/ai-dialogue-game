@@ -3,6 +3,7 @@
 这是“结构化状态管理”的核心：一致性不依赖完整对话历史，
 而是依赖这份不断被 update_world_state 工具更新的 JSON。
 """
+import math
 import os
 import time
 
@@ -107,7 +108,7 @@ class WorldState:
                 char = {}
                 if isinstance(info, dict):
                     char = {k: v for k, v in info.items() if isinstance(v, str)}  # 保留模板里的额外文字字段
-                    char.update(_sanitize_character(info))
+                    char.update(_sanitize_character(info, trusted=True))
                 _ensure_affinity(char, 0)
                 d["characters"][name.strip()] = char
         d["inventory"] = template.get("inventory") or []
@@ -465,8 +466,13 @@ def _characters_for_summary(chars, location_name, limit):
     return (here + rest)[:limit]
 
 
-def _sanitize_character(info):
-    """清理角色字段类型：态度应为文字、好感度为数字，防止模型把数值误塞进态度等。"""
+def _sanitize_character(info, trusted=False):
+    """清理角色字段类型：态度应为文字、好感度为数字，防止模型把数值误塞进态度等。
+
+    P0-2：`trusted=False`（模型经 update_world_state 写入）时**丢弃**
+    `affinity` / `met_turn` / `interactions`——这些是系统独占字段：
+    初始好感只能由 `apply_template`（可信模板）或 `relationship_events`（代码换算）写入。
+    """
     if not isinstance(info, dict):
         return {}
     out = {}
@@ -478,13 +484,14 @@ def _sanitize_character(info):
         out["location"] = info["location"]
     if isinstance(info.get("status"), str):
         out["status"] = info["status"]
-    aff = info.get("affinity")
-    if isinstance(aff, (int, float)) and not isinstance(aff, bool):
-        out["affinity"] = int(aff)
-    for k in ("met_turn", "interactions"):
-        v = info.get(k)
-        if isinstance(v, int) and not isinstance(v, bool):
-            out[k] = v
+    if trusted:
+        aff = info.get("affinity")
+        if isinstance(aff, (int, float)) and not isinstance(aff, bool):
+            out["affinity"] = clamp(int(aff), 0, 100)
+        for k in ("met_turn", "interactions"):
+            v = info.get(k)
+            if isinstance(v, int) and not isinstance(v, bool):
+                out[k] = v
     if isinstance(info.get("memories"), list):
         out["memories"] = [str(m).strip() for m in info["memories"] if isinstance(m, str) and m.strip()][-MAX_CHARACTER_MEMORIES:]
     return out
@@ -527,6 +534,18 @@ def safe_int(value, default=None):
     return default
 
 
+def _is_finite_number(value):
+    """有限数字（排除 bool / NaN / ±Infinity）——模型可能塞进这些值。"""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _clean_number(value):
+    """整数值存成 int，其余保留 3 位小数，避免状态里出现 15.000000000000002。"""
+    value = float(value)
+    return int(value) if value.is_integer() else round(value, 3)
+
+
 def _as_item(item):
     """背包条目容错：裸字符串视为 1 个；不是对象/字符串的丢弃。"""
     if isinstance(item, str):
@@ -543,12 +562,16 @@ def _as_str_list(value):
     return None
 
 
-def apply_update(state, update):
+def apply_update(state, update, power_cap=None):
     """把模型调用 update_world_state 返回的增量合并进现有状态。
 
     采用“增量合并”策略：只改动模型明确给出的字段，未给出的保持不变，
     避免模型每次都要复述完整状态而出错。
     对字段类型做容错：格式不对的单项跳过，不让整轮报错。
+
+    P0-2 系统独占字段：`player_power` 单次变化被钳制在 ±power_cap 内
+    （默认 ±1 个 realm_gap；岁月模式结算时 game._commit 会传入放宽后的 cap），
+    `max_hp` 单次变化被钳制在原值的 0.5×~1.5×，写入后保证 hp <= max_hp。
     """
     if not isinstance(update, dict):
         return state
@@ -571,7 +594,17 @@ def apply_update(state, update):
         d["time"] = update["time"]
 
     if isinstance(update.get("player_attributes"), dict):
-        attrs.update(update["player_attributes"])
+        incoming = dict(update["player_attributes"])
+        if "max_hp" in incoming:
+            # 生命上限是系统独占字段：单轮只能在原值的 0.5×~1.5× 之间变动（P0-2）
+            cur_max = attrs.get("max_hp")
+            cur_max = cur_max if _is_finite_number(cur_max) and cur_max >= 1 else 100
+            new_max = incoming["max_hp"]
+            if _is_finite_number(new_max) and new_max >= 1:
+                incoming["max_hp"] = _clean_number(min(max(new_max, cur_max * 0.5), cur_max * 1.5))
+            else:
+                incoming.pop("max_hp")
+        attrs.update(incoming)
     if "player_status_effects" in update:
         effects = _as_str_list(update["player_status_effects"])
         if effects is not None:
@@ -636,10 +669,19 @@ def apply_update(state, update):
     if update.get("current_goal") and isinstance(update["current_goal"], str):
         d["current_goal"] = update["current_goal"]
 
-    # 玩家战力成长（突破/升级）
-    power = update.get("player_power")
-    if isinstance(power, (int, float)) and not isinstance(power, bool):
-        d.setdefault("combat", {})["player_power"] = power
+    # 玩家战力成长（突破/升级）：P0-2 系统独占字段。
+    # 必须是有限正数；单次变化被钳制在 ±power_cap（默认 ±1 个 realm_gap）。
+    if update.get("player_power") is not None:
+        anchor = d.setdefault("combat", {})
+        current = anchor.get("player_power")
+        current = current if _is_finite_number(current) and current > 0 else 10
+        realm_gap = anchor.get("realm_gap")
+        realm_gap = realm_gap if _is_finite_number(realm_gap) and realm_gap > 0 else 5
+        cap = power_cap if _is_finite_number(power_cap) and power_cap > 0 else realm_gap
+        power = update["player_power"]
+        if _is_finite_number(power) and power > 0:
+            delta = max(-cap, min(cap, power - current))
+            anchor["player_power"] = _clean_number(max(current + delta, 0.001))
 
     # 关系事件：好感度动态增减（相识时长另由 time_bonus 派生）
     for ev in update.get("relationship_events") or []:
@@ -702,5 +744,12 @@ def apply_update(state, update):
 
     if update.get("turn_event"):
         state.add_event(str(update["turn_event"]))
+
+    # 生命值不能超过上限（max_hp 可能被下调）
+    max_hp = attrs.get("max_hp")
+    if _is_finite_number(max_hp) and max_hp >= 1:
+        hp_now = attrs.get("hp")
+        if _is_finite_number(hp_now) and hp_now > max_hp:
+            attrs["hp"] = _clean_number(max_hp)
 
     return state

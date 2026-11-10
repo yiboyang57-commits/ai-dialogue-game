@@ -273,8 +273,8 @@ Game._play_turn(player_input, add_user)
 | 场景 | `location` / `location_description` / `time` | string | 时间不得无故跳天 |
 | 玩家 | `player_attributes` | object | 只含变化的键；**`hp` 由代码保护覆盖** |
 | 玩家 | `player_status_effects` | string[] | **完整覆盖**，不是增量 |
-| 玩家 | `player_power` | number | 突破/升级时更新 |
-| 角色 | `characters` | object | 按名 upsert，缺失字段保留；`affinity` 建议走 `relationship_events` |
+| 玩家 | `player_power` | number | 突破/升级时更新；**单次变化钳制 ±1 个 `realm_gap`**（P0-2；岁月结算按天数放宽到 `realm_gap×max(1,天数/180)`） |
+| 角色 | `characters` | object | 按名 upsert，缺失字段保留；`affinity`/`met_turn`/`interactions` 是**系统独占**，模型写入被丢弃（P0-2），好感只能走 `relationship_events` |
 | 背包 | `inventory_add` | array | 累加到同名条目；`quantity` 缺省或为 **0** 都会被 `or 1` 兜底成 1；无 `name` 的条目被丢弃 |
 | 背包 | `inventory_remove` | array | 按 `quantity` **扣减**，`remove_all:true` 才整类删除（货币别用）。容错：裸字符串 `"护身符"` 等价于扣 1；最终 `quantity<=0` 的条目被整体过滤 |
 | 剧情 | `plot_flags` / `current_goal` | object / string | 合并 |
@@ -336,6 +336,8 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ```
 - `CURVES`：`realm_gap`（默认，k=1.0, decay=0.30, flee_bonus=0.6, base_damage=20, damage_scale=0.10）
   与 `flat`（decay=0, base_damage=15）。
+- **`base_damage` 是生命上限的百分比**（P0-2）：`base_damage=20` → 20%×`max_hp`，
+  默认 `max_hp=100` 时与旧行为完全一致。`resolve(..., max_hp=)` 由 `game._get_max_hp()` 传入。
 - 胜利伤害随优势衰减（`combat.win_damage_multiplier`）：领先 ≥1 个 `realm_gap` 无伤，
   领先 0~1 个 `realm_gap` 从 `40%` 线性降到 0，势均力敌/对手更强保持 `40%`；逃跑成功无伤。
 - **胜利永不致死**：`outcome == "win"` 时 `hp_after = max(1, ...)`、`player_down = False`（P0-1）。
@@ -362,8 +364,10 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
 2. **改完必须跑全量测试**（§1 的命令），基线 57 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
-3. **HP / 死亡 / options 是系统独占字段。** 任何新路径都要像 `_protect_hp` 那样保证
-   代码值最终胜出，模型写不进 `hp` 和 `attribute_events[].attribute=="hp"`。
+3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
+   任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
+   `hp`、`attribute_events[].attribute=="hp"`、`characters[].affinity|met_turn`；
+   `player_power` 单次变化 ≤ ±1 个 `realm_gap`，`max_hp` 单轮 ≤ 0.5×~1.5×（P0-2）。
 4. **失败要可回滚。** 新的结算副作用（扣血、扣道具、扣保底）必须发生在 `_play_turn` 的快照与
    `save()` 之间，保证第二次 API 调用失败时能干净撤销。
 5. **去数据化。** 玩家可见的文字（叙事 / `to_player_summary()`）**不得出现** hp、战力、好感度、概率、伤害数值。

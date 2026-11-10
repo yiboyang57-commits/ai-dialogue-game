@@ -52,7 +52,8 @@ UPDATE_TOOL = {
                     "description": (
                         "发生变化的角色，键为角色名。可包含 description / attitude_toward_player(文字，如“友善”) / "
                         "location / status / memory（值得记住的往事，一句话）等字段，缺失字段保持原值。"
-                        "好感度请优先用 relationship_events 记录事件让系统换算，不要在这里写 affinity 数值。"
+                        "好感度只能通过 relationship_events 记录事件、由系统换算；"
+                        "affinity / met_turn 等数值是系统字段，写在这里会被忽略。"
                     ),
                     "additionalProperties": {
                         "type": "object",
@@ -61,7 +62,6 @@ UPDATE_TOOL = {
                             "attitude_toward_player": {"type": "string"},
                             "location": {"type": "string"},
                             "status": {"type": "string"},
-                            "affinity": {"type": "number", "description": "该角色对玩家的好感度（0~100，用于关系判定）。"},
                             "memory": {"type": "string", "description": "本轮该角色会记住的一件与玩家有关的事（一句话，站在该角色角度），系统会追加到其往事里；没有就省略。"},
                         },
                     },

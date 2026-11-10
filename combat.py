@@ -68,8 +68,12 @@ def flee_probability(player_power, enemy_power, realm_gap, params):
     return _sigmoid(flee_logit(player_power, enemy_power, realm_gap, params))
 
 
-def _damage(attacker_power, defender_power, params):
-    base = params["base_damage"]
+def _damage(attacker_power, defender_power, params, max_hp=100):
+    """伤害量：base_damage 解释为「生命上限的百分比」（base_damage=20 → 20%×max_hp）。
+
+    默认上限 100 时与旧行为完全一致；上限更高的角色要承受更多绝对伤害（P0-2）。
+    """
+    base = params["base_damage"] * (max(1, max_hp) / 100.0)
     gap = attacker_power - defender_power
     mult = 1.0 + params["damage_scale"] * max(gap, 0)
     return max(int(round(base * mult)), max(1, int(round(base * 0.3))))
@@ -91,10 +95,11 @@ def win_damage_multiplier(player_power, enemy_power, realm_gap):
     return 0.4 * (1.0 - advantage / gap)
 
 
-def resolve(player_power, enemy_power, realm_gap, action, params, player_hp, mods=None):
+def resolve(player_power, enemy_power, realm_gap, action, params, player_hp, mods=None, max_hp=100):
     """掷骰判定一次战斗/逃跑，返回结构化结果（不含概率数值）。
 
     mods 可选：{"power_boost": 数值, "win_bonus": logit, "flee_bonus": logit, "flee_guarantee": bool}
+    max_hp：玩家生命上限，伤害按它的百分比结算（P0-2）；默认 100 时与旧行为一致。
     """
     mods = mods or {}
     pp = player_power + (mods.get("power_boost") or 0)
@@ -107,15 +112,15 @@ def resolve(player_power, enemy_power, realm_gap, action, params, player_hp, mod
             if random.random() < _sigmoid(z):
                 dmg, outcome, enemy_defeated = 0, "flee_success", False
             else:
-                dmg, outcome, enemy_defeated = _damage(enemy_power, pp, params), "flee_fail", False
+                dmg, outcome, enemy_defeated = _damage(enemy_power, pp, params, max_hp), "flee_fail", False
     else:  # fight
         z = win_logit(pp, enemy_power, realm_gap, params) + (mods.get("win_bonus") or 0)
         if random.random() < _sigmoid(z):
             mult = win_damage_multiplier(pp, enemy_power, realm_gap)
-            dmg = int(round(_damage(enemy_power, pp, params) * mult))
+            dmg = int(round(_damage(enemy_power, pp, params, max_hp) * mult))
             outcome, enemy_defeated = "win", True
         else:
-            dmg = _damage(enemy_power, pp, params)
+            dmg = _damage(enemy_power, pp, params, max_hp)
             outcome, enemy_defeated = "lose", False
 
     hp_after = max(0, player_hp - dmg)

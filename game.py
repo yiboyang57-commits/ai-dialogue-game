@@ -65,6 +65,7 @@ class Game:
         self.llm = llm
         self.rules = rules if rules is not None else load_rules()
         self.system_prompt = build_system_prompt(state, self.rules)
+        self._block_elapsed = 0  # 本轮若是岁月模式结算，记下经过天数（用于放宽战力成长上限）
 
     def _refresh_system_prompt(self):
         # 战力/天赋等锚定可能变化，每轮重建，保证发给模型的是最新值
@@ -97,7 +98,16 @@ class Game:
     def _commit(self, player_input, text, update, add_user):
         already_dead = self.state.is_dead
         cause = (self.state.data.get("player") or {}).get("death_cause")
-        apply_update(self.state, update)
+        # P0-2：战力只能由代码按上限增长。场景回合 ±1 个 realm_gap；
+        # 岁月模式结算按经过天数放宽到 realm_gap × max(1, 天数/180)。
+        block_days = self._block_elapsed or 0
+        self._block_elapsed = 0
+        power_cap = None
+        if block_days:
+            realm_gap = (self.state.data.get("combat") or {}).get("realm_gap")
+            realm_gap = realm_gap if isinstance(realm_gap, (int, float)) and realm_gap > 0 else 5
+            power_cap = realm_gap * max(1.0, block_days / 180.0)
+        apply_update(self.state, update, power_cap=power_cap)
         if already_dead or self.state.is_dead:
             self.state.mark_dead(cause or update.get("turn_event") or "生命耗尽")
         self.state.bump_turn()
@@ -241,6 +251,14 @@ class Game:
         return any(isinstance(i, dict) and i.get("name") == name and safe_int(i.get("quantity"), 1) > 0
                    for i in self.state.data.get("inventory") or [])
 
+    def _get_max_hp(self):
+        """生命上限（P0-2 起战斗伤害按它的百分比结算）；非法值按 100 处理。"""
+        attrs = self.state.data.get("player", {}).get("attributes") or {}
+        value = attrs.get("max_hp")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 1:
+            return value
+        return 100
+
     def _consume_death_protection(self):
         player = self.state.data["player"]
         used = player.setdefault("death_protections_used", {})
@@ -307,7 +325,8 @@ class Game:
                 self._consume_item(use_item)
 
         hp = self._get_hp()
-        result = combat_module.resolve(player_power, enemy_power, realm_gap, action, params, hp, mods)
+        result = combat_module.resolve(player_power, enemy_power, realm_gap, action, params, hp, mods,
+                                       max_hp=self._get_max_hp())
         nonlethal_down = result["player_down"] and req.get("lethal") is False
         protection = None
         if nonlethal_down:
@@ -472,6 +491,7 @@ class Game:
         seclusion = req.get("seclusion") is True
         known = [n for n, c in (d.get("characters") or {}).items() if isinstance(c, dict)]
         result = seasons.roll_block(days, seclusion, known)
+        self._block_elapsed = result["elapsed"]  # 供 _commit 放宽战力成长上限
 
         # 日历与年龄
         calendar = d.setdefault("calendar", {"days": 0})
@@ -570,6 +590,7 @@ class Game:
             self.memory.recent = restored.recent
             self.memory.buffer = restored.buffer
             self.memory.turns_since_compression = restored.turns_since_compression
+            self._block_elapsed = 0
             self._refresh_system_prompt()
             raise
 
