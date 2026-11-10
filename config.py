@@ -66,6 +66,11 @@ def save_slot_suffix(save_key=""):
     return "_" + (safe or "slot")
 
 
+def db_path_for(save_key=""):
+    """SQLite 事件库路径（一个存档一个 .db，放在 save/ 下，随存档目录一起忽略）。"""
+    return os.path.join(SAVE_DIR, "game" + save_slot_suffix(save_key) + ".db")
+
+
 def list_save_slots():
     """列出 save/ 目录下已有的存档，返回 [{"key","name","updated"}]，不含默认槽。
 

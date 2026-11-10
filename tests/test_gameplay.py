@@ -17,6 +17,7 @@ import judgment
 import memory
 import prompts
 import seasons
+import storage
 import world_state
 from game import Game
 from llm_client import LLMError
@@ -1294,6 +1295,97 @@ class TempSlotPruneTests(unittest.TestCase):
         removed = config.prune_temp_slots(7, keep="临时-333333")
         self.assertEqual(removed, [])
         self.assertTrue(active.exists())
+
+
+class StorageSQLiteTests(unittest.TestCase):
+    """路线图阶段 1：SQLite 审计层（建库 / 快照回放 / 迁移 / 可选双写）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="wanjie-db-")
+        self.addCleanup(self.tmp.cleanup)
+        for module in (memory, world_state, config):
+            patcher = patch.object(module, "SAVE_DIR", self.tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _state(self, hp=100, flags=None):
+        st = world_state.WorldState()
+        st.apply_template({"world": {"background": "存储测试"},
+                           "player": {"name": "林舟", "attributes": {"hp": hp, "max_hp": 100}}})
+        if flags:
+            st.data["plot_flags"].update(flags)
+        return st
+
+    def test_record_replay_and_stats(self):
+        st = self._state()
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "第一回合", player_input="出发", update={}, state=st.data)
+            st.data["player"]["attributes"]["hp"] = 50
+            st.data["plot_flags"]["x"] = True
+            db.record_turn(2, "action", "第二回合", player_input="受伤",
+                           update={"player_attributes": {"hp": 50}, "plot_flags": {"x": True}},
+                           state=st.data,
+                           roll={"kind": "judgment", "payload": {"probability": 0.3, "success": False}})
+            self.assertEqual(db.stats()["turns"], 2)
+            self.assertEqual(len(db.list_turns()), 2)
+            self.assertEqual(db.list_rolls()[0]["kind"], "judgment")
+            rebuilt = db.load_state()
+            self.assertEqual(rebuilt, st.data)  # 最后写入的完整状态可精确还原
+            self.assertEqual(rebuilt["player"]["attributes"]["hp"], 50)
+            self.assertTrue(rebuilt["plot_flags"]["x"])
+        finally:
+            db.close()
+
+    def test_snapshot_every_ten_turns(self):
+        st = self._state()
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            for n in range(1, 26):
+                db.record_turn(n, "action", f"回合{n}", update={}, state=st.data)
+            self.assertEqual(db.stats()["snapshots"], 3)  # 第 1、10、20 回合
+        finally:
+            db.close()
+
+    def test_migrate_from_json(self):
+        st = self._state(hp=77, flags={"已迁移": True})
+        st.data["meta"]["turn"] = 3
+        st.save()
+        mem = memory.Memory()
+        mem.recent = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "旧回答"}]
+        mem.save()
+        db_path, turns = storage.migrate_from_json("")
+        self.assertIsNotNone(db_path)
+        self.assertGreaterEqual(turns, 1)
+        db = storage.SaveDB(db_path)
+        try:
+            self.assertGreaterEqual(db.stats()["turns"], 1)
+            rebuilt = db.load_state()
+            self.assertEqual(rebuilt["player"]["attributes"]["hp"], 77)
+            self.assertTrue(rebuilt["plot_flags"].get("已迁移"))
+        finally:
+            db.close()
+
+    def test_game_dual_write_is_optional_and_safe(self):
+        # 默认关闭：不产生 .db
+        game = Game(world_state.WorldState(), memory.Memory(),
+                    Replies(("你好。", {"turn_event": "t"})), rules=[])
+        game.run_turn("打个招呼")
+        self.assertFalse(os.path.exists(config.db_path_for("")))
+        # WANJIE_STORAGE=sqlite：每回合双写
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            game = Game(world_state.WorldState(), memory.Memory(),
+                        Replies(("你好。", {"turn_event": "t"})), rules=[])
+            game.run_turn("打个招呼")
+        self.assertTrue(os.path.exists(config.db_path_for("")))
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            self.assertEqual(db.stats()["turns"], 1)
+            self.assertEqual(db.list_turns()[0]["narrative"], "你好。")
+            rebuilt = db.load_state()
+            self.assertEqual(rebuilt["meta"]["turn"], 1)  # 回合号等代码侧改动也要能还原
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":

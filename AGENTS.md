@@ -44,7 +44,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**128 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**132 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -105,6 +105,7 @@
          dynamics.py     好感度/属性动态系数          prompts.py  系统提示+每轮上下文
          seasons.py      岁月模式：按旬推进时间/掷随机事件（纯函数+数据表）
          tools.py        update_world_state 的 JSON Schema（并在底部重导出 apply_update）
+         storage.py      SQLite 事件层（可选审计/快照/迁移；JSON 仍是主存储）
                              ↓
 基础层   config.py (常量/路径/存档槽)   llm_client.py (urllib HTTP)   gm_rules.py
          character_builder.py (主角构建)   world_gen.py (世界观生成/归一化)   save_bundle.py
@@ -117,7 +118,7 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 721 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `game.py` | 775 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
 | `world_state.py` | 823 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
 | `app.py` | 1454 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
@@ -128,13 +129,15 @@
 | `prompts.py` | 221 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
 | `tools.py` | 240 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
 | `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
-| `config.py` | 180 | 路径、常量、存档槽、Key 读写 |
+| `config.py` | 185 | 路径、常量、存档槽、Key 读写 |
 | `llm_client.py` | 136 | urllib 直连 DeepSeek，tool calling 解析 |
 | `memory.py` | 89 | `recent`(最近3轮) + `buffer`(待压缩) |
 | `dynamics.py` | 80 | 好感度公式 + 关系/属性事件表 |
 | `seasons.py` | 155 | **岁月模式**：按旬推进时间、掷小插曲/打断事件、回血与时长文案（纯函数 + 数据表） |
 | `save_bundle.py` | 57 | 网页版存档导出/导入 |
 | `gm_rules.py` / `gm_rules.json` | 51 | 主持人全局限制条件（与世界观解耦，可编辑） |
+| `storage.py` | 254 | **路线图阶段 1**：SQLite 事件层（turns/state_changes/rolls/snapshots），可选双写 + 迁移 |
+| `scripts/migrate_json_to_sqlite.py` | 52 | 把 JSON 存档迁移成 .db（`--slot` / `--all`） |
 | `world.example.json` | — | 世界观模板示例 |
 | `万界.txt` / `九天万界.docx` | — | **设计参考文档，不被任何代码引用**，不要当成依赖 |
 
@@ -369,7 +372,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 128 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 132 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -417,6 +420,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 | 一键天命的品级权重 | `app._AUTO_TIER_WEIGHT` |
 | 系统提示的行为约束 | `prompts.SYSTEM_PROMPT` 正文 + `build_system_prompt()` 的拼接顺序 |
 | 模型能写哪些状态字段 | `tools.UPDATE_TOOL` 的 JSON Schema **（改 schema 必须同步 `world_state.apply_update`）** |
+| 存档历史/审计（SQLite） | `storage.py`；`WANJIE_STORAGE=sqlite` 开启双写；迁移用 `scripts/migrate_json_to_sqlite.py` |
 | 上下文长度/压缩频率 | `config.py`：`KEEP_RECENT_ENTRIES=6` / `COMPRESS_EVERY_TURNS=20` / `MAX_BUFFER_ENTRIES=80` / `COMPRESS_MAX_FAILURES=3` / `COMPRESS_RETRY_TURNS=5` / `MAX_EVENT_LOG=15` / `MAX_CHAPTER_SUMMARIES=6` |
 | 模型名/接口地址 | `config.DEFAULT_MODEL` / `config.BASE_URL`（或 `config.json` 的 `model`） |
 | 天赋候选池的生成/去重/保底 | `character_builder.py`（`POOL_TARGET_COUNTS` / `_ensure_floor` / `sample_hand`） |
@@ -485,7 +489,9 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 11. **容错**：`apply_update` 对每个字段做类型守卫，格式不对的单项跳过而不是让整轮报错；
     文字型属性（如 `修为="筑基初期"`）不参与数值增减。`world_gen.normalize_template` 接受
     `inventory` 为字符串列表 / `{名: 数量}`，`characters` 为列表 / `{名: 描述}`。
-12. **CI（待启用）**：工作流模板在 `docs/ci-tests.yml`（`py_compile` + 全量测试，不调用 API），
+12. **SQLite 存储（阶段 1 第一步）**：`storage.py` 是可选审计层，JSON 仍是主存储；
+    开启双写用环境变量 `WANJIE_STORAGE=sqlite`。**不要把 .db 当主存储读**（读档仍走 JSON）。
+13. **CI（待启用）**：工作流模板在 `docs/ci-tests.yml`（`py_compile` + 全量测试，不调用 API），
     `.github/workflows/tests.yml` 也已放好，但当前 PAT 缺 `workflow` scope 推不上去；
     补权限后 `git add .github/workflows/tests.yml && git commit && git push` 即可启用。
 
@@ -493,7 +499,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 128 passed，再动手。
+1. **先跑基线测试**（§1），确认 132 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -508,7 +514,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，128 passed）
+# 全量测试（唯一可靠命令，132 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动
@@ -539,5 +545,6 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 | `MAX_OFFSCREEN` | 10 | `world_state.py` |
 | `ATTRIBUTE_FACTOR_SCALE` | 10（每 10 点属性 ≈ ±1 因素） | `judgment.py` |
 | `MAX_BUFFER_ENTRIES` / `COMPRESS_MAX_FAILURES` / `COMPRESS_RETRY_TURNS` | 80 / 3 / 5 | `config.py` |
+| `SNAPSHOT_EVERY_TURNS` | 10（SQLite 快照间隔） | `storage.py` |
 
 **游戏内命令**：`/state` 查看状态 · `/rules` 查看主持人规则 · `/save` 保存 · `/quit` 保存退出 · `/help` 帮助

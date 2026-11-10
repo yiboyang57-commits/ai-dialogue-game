@@ -7,7 +7,9 @@ import combat as combat_module
 import dynamics as dynamics_module
 import judgment as judgment_module
 import seasons
-from config import MAX_CHAPTER_SUMMARIES, COMPRESS_MAX_FAILURES, COMPRESS_RETRY_TURNS
+import storage
+from config import (MAX_CHAPTER_SUMMARIES, COMPRESS_MAX_FAILURES, COMPRESS_RETRY_TURNS,
+                    db_path_for)
 from gm_rules import load_rules
 from llm_client import LLMError
 from memory import Memory
@@ -71,6 +73,7 @@ class Game:
         # P2-16：压缩失败退避状态（不持久化，重开进程后重新计数即可）
         self._compress_failures = 0
         self._compress_skip_until = 0
+        self._last_roll = None  # SQLite 审计层用：本轮掷骰记录（战斗/判定），提交后清空
 
     def _refresh_system_prompt(self):
         # 战力/天赋等锚定可能变化，每轮重建，保证发给模型的是最新值
@@ -125,6 +128,29 @@ class Game:
         if self.memory.needs_compression():
             self._maybe_compress()
         self.save()
+        self._record_turn(player_input, text, update, block_days)
+
+    def _record_turn(self, player_input, text, update, block_days):
+        """SQLite 审计层双写（路线图阶段 1）：默认关闭，任何异常都不得影响游戏。"""
+        if not storage.enabled():
+            self._last_roll = None
+            return
+        kind = "block" if block_days else ("opening" if player_input is None else "action")
+        try:
+            storage.append_turn(
+                db_path_for(self.state.save_key),
+                turn_no=self.state.data.get("meta", {}).get("turn", 0),
+                kind=kind,
+                narrative=text,
+                player_input=player_input,
+                update=update,
+                state=self.state.data,
+                roll=self._last_roll,
+            )
+        except Exception:
+            pass  # 审计/历史层失败不能影响游戏本身
+        finally:
+            self._last_roll = None
 
     def _maybe_compress(self):
         """P2-16：压缩失败静默重试会导致缓冲无限增长、且每轮多一次昂贵调用。
@@ -414,6 +440,23 @@ class Game:
         if result["player_down"]:
             self.state.mark_dead("与" + (req.get("enemy_name") or "敌人") + "的冲突中生命耗尽")
 
+        # SQLite 审计：记录本场战斗的输入与掷骰概率（不发给玩家，只入库复盘用）
+        pp = player_power + (mods.get("power_boost") or 0)
+        try:
+            self._last_roll = {"kind": "combat", "payload": {
+                "enemy_name": req.get("enemy_name"),
+                "enemy_power": enemy_power,
+                "action": action,
+                "outcome": result["outcome"],
+                "player_damage": result["player_damage"],
+                "hp_after": result["player_hp_after"],
+                "win_probability": round(combat_module.win_probability(pp, enemy_power, realm_gap, params), 4),
+                "flee_probability": round(combat_module.flee_probability(pp, enemy_power, realm_gap, params), 4),
+                "mods": mods,
+            }}
+        except Exception:
+            self._last_roll = None
+
         brief = combat_module.gm_brief(result, hp)
         if nonlethal_down:
             brief += " 这是事先明确的非致命冲突，玩家昏迷、失去战斗能力。停在此处，不擅自跳到苏醒或后续获救。"
@@ -496,6 +539,16 @@ class Game:
             allow_pity=consequence not in ("injury", "death"),
             certain_failure=req.get("certain_failure") is True,
         )
+        # SQLite 审计：记录判定的输入、概率与结果（只入库复盘用）
+        self._last_roll = {"kind": "judgment", "payload": {
+            "type": jtype,
+            "subject": subject,
+            "success": bool(success),
+            "probability": round(float(_p or 0.0), 4),
+            "factors": dict(factors),
+            "consequence": consequence,
+            "certain_failure": req.get("certain_failure") is True,
+        }}
         brief = judgment_module.judgment_brief(jtype, success, subject)
         hp = self._get_hp()
         certain = req.get("certain_failure") is True
@@ -687,6 +740,7 @@ class Game:
             self.memory.buffer = restored.buffer
             self.memory.turns_since_compression = restored.turns_since_compression
             self._block_elapsed = 0
+            self._last_roll = None
             self._refresh_system_prompt()
             raise
 

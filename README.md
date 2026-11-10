@@ -191,6 +191,18 @@ python3 main.py   # 或 python3 gui.py
 
 战斗判定（`combat.py`）同样接入天赋与一次性法宝系数。
 
+## v2.23 · 存储阶段 1 第一步：SQLite 事件层
+
+对应路线图阶段 1 的第一步，**不改变任何游戏行为**：JSON 仍是唯一主存储，
+SQLite 作为可选的「历史 / 审计 / 恢复」层。
+
+- 开启方式：`WANJIE_STORAGE=sqlite .venv/bin/python -m streamlit run app.py`
+  （默认关闭；写库失败静默，不影响游戏）。
+- 一个存档 = 一个 `save/game_<槽>.db`：每回合记叙事、玩家输入、状态增量；
+  战斗/判定的掷骰概率与结果也入库，方便复盘；每 10 回合写完整快照。
+- 迁移旧存档：`.venv/bin/python scripts/migrate_json_to_sqlite.py --all`
+- 尚未替换 JSON 主存储；实体/事实/全文检索表（路线图 §2.3）留到下一步。
+
 ## v2.22 · 逻辑加固（把裁决权收回代码）
 
 按 `逻辑审查_任务书.md` 修复 P0×4 + P1×8，测试从 57 例增加到 91 例。要点：
