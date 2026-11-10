@@ -485,8 +485,9 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 11. **容错**：`apply_update` 对每个字段做类型守卫，格式不对的单项跳过而不是让整轮报错；
     文字型属性（如 `修为="筑基初期"`）不参与数值增减。`world_gen.normalize_template` 接受
     `inventory` 为字符串列表 / `{名: 数量}`，`characters` 为列表 / `{名: 描述}`。
-12. **CI**：`.github/workflows/tests.yml` 在 push / PR 时跑 `py_compile` + 全量测试（不调用 API）。
-    本地没有 CI 运行环境，这条工作流尚未在 GitHub 上实际跑过，首次推送后请看 Actions 结果。
+12. **CI（待启用）**：工作流模板在 `docs/ci-tests.yml`（`py_compile` + 全量测试，不调用 API），
+    `.github/workflows/tests.yml` 也已放好，但当前 PAT 缺 `workflow` scope 推不上去；
+    补权限后 `git add .github/workflows/tests.yml && git commit && git push` 即可启用。
 
 ---
 
