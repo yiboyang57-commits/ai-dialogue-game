@@ -15,6 +15,9 @@ from judgment import death_protection_limits, ITEM_MODIFIERS
 MAX_OFFSCREEN = 10         # 幕后进展最多保留条数（玩家看不到原文，只列给模型）
 RELATION_MAX_DELTA = 30    # P1-10：单轮对同一对象的好感变化上限
 MAX_HP_CEILING = 100000    # 生命上限的绝对安全上限（正常玩法远达不到，只防每轮 ×1.5 滚雪球）
+# 系统独占属性：hp / max_hp 只能由代码（战斗、判定、岁月结算、_guard_vitals）写，
+# attribute_events 不能碰，否则会绕过 player_attributes 的钳制（审查 H1）。
+SYSTEM_OWNED_ATTRIBUTES = frozenset({"hp", "max_hp"})
 
 
 class WorldState:
@@ -550,9 +553,12 @@ def safe_int(value, default=None):
         return int(value) if value == value and value not in (float("inf"), float("-inf")) else default
     if isinstance(value, str):
         try:
-            return int(float(value.strip()))
-        except ValueError:
+            number = float(value.strip())
+        except (ValueError, OverflowError):
             return default
+        if not math.isfinite(number):
+            return default
+        return int(number)
     return default
 
 
@@ -744,7 +750,10 @@ def apply_update(state, update, power_cap=None):
 
     # 属性事件：其它系数（声望/魅力/福缘/体力/修为…）动态增减。
     # 若该属性当前是文字（如 修为="筑基初期"），数值增减没有意义，跳过而不是报错。
+    # hp / max_hp 是系统独占属性，attribute_events 不得改写（审查 H1：否则可绕过生命上限钳制）。
     def bump(attr, delta):
+        if attr in SYSTEM_OWNED_ATTRIBUTES:
+            return
         cur = attrs.get(attr, 0)
         cur_int = safe_int(cur)
         if cur_int is None:
@@ -788,11 +797,15 @@ def apply_update(state, update, power_cap=None):
     if update.get("turn_event"):
         state.add_event(str(update["turn_event"]))
 
-    # 生命值不能超过上限（max_hp 可能被下调）
+    # 生命上限收口（审查 H1）：任何路径（player_attributes / attribute_events / 旧存档）
+    # 都不能留下非法值；同时保证 hp 落在 [0, max_hp]。
     max_hp = attrs.get("max_hp")
-    if _is_finite_number(max_hp) and max_hp >= 1:
-        hp_now = attrs.get("hp")
-        if _is_finite_number(hp_now) and hp_now > max_hp:
-            attrs["hp"] = _clean_number(max_hp)
+    if not (_is_finite_number(max_hp) and max_hp >= 1):
+        attrs["max_hp"] = 100
+    else:
+        attrs["max_hp"] = _clean_number(min(max_hp, MAX_HP_CEILING))
+    hp_now = attrs.get("hp")
+    if _is_finite_number(hp_now):
+        attrs["hp"] = _clean_number(max(0, min(hp_now, attrs["max_hp"])))
 
     return state

@@ -218,6 +218,56 @@ class GameplayTests(GameFixture):
         hp_after = game.state.data["player"]["attributes"]["hp"]
         self.assertGreaterEqual(hp_after, 46)
 
+    def test_injury_damage_stays_within_severity_range(self):
+        """审查 L3：不 patch uniform，锁住 0.8~1.2 的实际浮动区间。"""
+        for severity, low, high in (("light", 8, 12), ("medium", 20, 30), ("heavy", 36, 54)):
+            with self.subTest(severity=severity):
+                llm = Replies(("危险", {"judgment": {"type": "action", "failure_consequence": "injury",
+                                                    "failure_severity": severity}}),
+                              ("你受了伤。", {}))
+                game = self.game(llm, hp=100)
+                with patch.object(random, "random", return_value=0.999999):
+                    game.run_turn("冒险")
+                damage = 100 - game.state.data["player"]["attributes"]["hp"]
+                self.assertTrue(low <= damage <= high, (severity, damage))
+
+    def test_days_passed_survives_a_judgment_turn(self):
+        """审查 M1：判定回合第一段声明的 days_passed 不能被 _prepare_roll 丢掉。"""
+        llm = Replies(("赶路", {"days_passed": 2, "judgment": {"type": "action"}}), ("到了。", {}))
+        game = self.game(llm)
+        with patch.object(random, "random", return_value=0.0):
+            game.run_turn("赶两天路")
+        self.assertEqual(game.state.data["calendar"]["days"], 2)
+
+    def test_days_passed_survives_a_combat_turn(self):
+        llm = Replies(("遇袭", {"days_passed": 3, "combat": {"enemy_name": "狼", "enemy_power": 5,
+                                                             "action": "fight"}}),
+                      ("你赢了。", {}))
+        game = self.game(llm)
+        with patch.object(random, "random", return_value=0.0):
+            game.run_turn("赶三天路后被狼袭击")
+        self.assertEqual(game.state.data["calendar"]["days"], 3)
+
+    def test_affinity_override_covers_legacy_characters(self):
+        """审查 L1：旧存档角色没有 affinity 字段时，模型填的好感因素也要被代码覆盖。"""
+        game = self.game(Replies(), hp=100)
+        game.state.data["characters"] = {"甲": {"description": "旧存档角色"}}
+        game.llm = Replies(("靠近", {"judgment": {"type": "relationship", "subject": "甲",
+                                                 "factors": {"当前好感度": 3}}}),
+                           ("她没理你。", {}))
+        captured = {}
+        real = judgment.resolve_judgment
+
+        def spy(jtype, factors, talents, item_bonus, pity, allow_pity=True, certain_failure=False):
+            captured[jtype] = dict(factors)
+            return real(jtype, factors, talents, item_bonus, pity,
+                        allow_pity=allow_pity, certain_failure=certain_failure)
+
+        with patch.object(judgment, "resolve_judgment", side_effect=spy), \
+                patch.object(random, "random", return_value=0.999999):
+            game.run_turn("接近她")
+        self.assertLess(captured["relationship"]["当前好感度"], 0)
+
     def test_failed_second_call_rolls_back_items_hp_memory_and_disk(self):
         llm = Replies(
             ("准备逃跑", {"location": "新地点", "combat": {"enemy_name": "敌人", "enemy_power": 20,
@@ -412,6 +462,20 @@ class RobustnessTests(unittest.TestCase):
         game = self.game(llm)
         game.run_turn("发呆")
         self.assertEqual(game.state.data["player"]["attributes"]["max_hp"], 100)
+
+    def test_safe_int_handles_overflow_strings(self):
+        """审查 L4：'1e999' / 'inf' 这类字符串不能抛 OverflowError 打断整轮。"""
+        self.assertIsNone(world_state.safe_int("1e999"))
+        self.assertIsNone(world_state.safe_int("inf"))
+        self.assertIsNone(world_state.safe_int("-inf"))
+        self.assertIsNone(world_state.safe_int("nan"))
+        self.assertEqual(world_state.safe_int("12"), 12)
+
+    def test_overflow_days_passed_does_not_break_turn(self):
+        llm = Replies(("走了很久。", {"days_passed": "1e999"}))
+        game = self.game(llm)
+        game.run_turn("走了很久")
+        self.assertEqual(game.state.data["calendar"]["days"], 0)
 
     # ---- 2. 因素一律“正=有利”：越危险成功率越低 ----
     def test_all_factor_weights_follow_positive_is_favourable(self):
@@ -776,6 +840,8 @@ class GameplayAuthorityTests(GameFixture):
                 "inventory_add": [{"name": rnd.choice(["灵石", 7]), "quantity": rnd.choice(junk)}],
                 "relationship_events": [{"subject": "甲", "event": rnd.choice(list(dynamics.RELATION_EVENTS))}
                                         for _ in range(rnd.randint(0, 4))],
+                "attribute_events": [{"attribute": rnd.choice(["hp", "max_hp", "声望", "运气"]),
+                                      "delta": rnd.choice(junk)}],
             }
             world_state.apply_update(state, update)
             attrs = state.data["player"]["attributes"]
@@ -791,6 +857,46 @@ class GameplayAuthorityTests(GameFixture):
             for item in state.data["inventory"]:
                 self.assertIsInstance(item.get("name"), str)
                 self.assertGreater(item.get("quantity"), 0)
+
+    # ---- 审查 H1：attribute_events 是生命上限的另一条旁路 ----
+    def test_attribute_events_cannot_touch_vitals(self):
+        state = self._fresh()
+        world_state.apply_update(state, {"attribute_events": [
+            {"attribute": "max_hp", "delta": 10 ** 9},
+            {"attribute": "hp", "delta": -500},
+        ]})
+        attrs = state.data["player"]["attributes"]
+        self.assertEqual(attrs["max_hp"], 100)
+        self.assertEqual(attrs["hp"], 100)
+        self.assertTrue(1 <= attrs["max_hp"] <= world_state.MAX_HP_CEILING)
+
+    def test_max_hp_is_normalized_even_if_state_is_dirty(self):
+        state = self._fresh()
+        state.data["player"]["attributes"]["max_hp"] = -900
+        state.data["player"]["attributes"]["hp"] = 500
+        world_state.apply_update(state, {"plot_flags": {"x": True}})
+        attrs = state.data["player"]["attributes"]
+        self.assertTrue(1 <= attrs["max_hp"] <= world_state.MAX_HP_CEILING)
+        self.assertGreaterEqual(attrs["hp"], 0)
+        self.assertLessEqual(attrs["hp"], attrs["max_hp"])
+
+    def test_get_max_hp_rejects_invalid_values(self):
+        game = self.game(Replies(), hp=100)
+        for bad in (float("inf"), float("nan"), -900, 0, "100", True):
+            with self.subTest(bad=bad):
+                game.state.data["player"]["attributes"]["max_hp"] = bad
+                self.assertEqual(game._get_max_hp(), 100)
+
+    def test_attribute_events_cannot_inflate_combat_damage(self):
+        llm = Replies(("你休息。", {"attribute_events": [{"attribute": "max_hp", "delta": 10 ** 9}]}),
+                      ("迎战", {"combat": {"enemy_name": "狼", "enemy_power": 20, "action": "fight"}}),
+                      ("你输了。", {}))
+        game = self.game(llm, hp=100)
+        game.run_turn("休息")
+        with patch.object(random, "random", return_value=0.999999):
+            game.run_turn("迎战")
+        self.assertFalse(game.is_over)
+        self.assertGreater(game.state.data["player"]["attributes"]["hp"], 0)
 
 
 class CombatDamageTests(unittest.TestCase):

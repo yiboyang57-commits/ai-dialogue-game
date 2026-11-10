@@ -1,6 +1,7 @@
 """游戏编排：每轮流程、战斗/非战斗判定、状态更新、历史压缩、存读档。"""
 import copy
 import json
+import math
 import random
 import combat as combat_module
 import dynamics as dynamics_module
@@ -150,8 +151,13 @@ class Game:
         return text, update
 
     def _prepare_roll(self, update):
-        """只接受判定前的场景变化，丢弃模型提前猜测的奖励、胜负和行动选项。"""
-        context = {k: update[k] for k in ("location", "location_description", "time") if k in update}
+        """只接受判定前的场景变化，丢弃模型提前猜测的奖励、胜负和行动选项。
+
+        `days_passed` 属于"已经发生的经过时间"，判定/战斗回合同样要保留（审查 M1）；
+        time_block 回合由 _commit 的 block_days 分支处理，不会重复计数。
+        """
+        context = {k: update[k] for k in ("location", "location_description", "time", "days_passed")
+                   if k in update}
         chars = {}
         for name, info in (update.get("characters") or {}).items():
             if isinstance(info, dict):
@@ -256,10 +262,11 @@ class Game:
                    for i in self.state.data.get("inventory") or [])
 
     def _get_max_hp(self):
-        """生命上限（P0-2 起战斗伤害按它的百分比结算）；非法值按 100 处理。"""
+        """生命上限（P0-2 起战斗伤害按它的百分比结算）；非法值（NaN/inf/负数）按 100 处理。"""
         attrs = self.state.data.get("player", {}).get("attributes") or {}
         value = attrs.get("max_hp")
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 1:
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 1):
             return value
         return 100
 
@@ -411,9 +418,10 @@ class Game:
 
         # 对象是已知角色时，按判定类型把“有效好感度(含相识时长)”换算成对应因素（0~100 → -3~+3）。
         # P1-6：用代码值**覆盖**模型声明（不再 setdefault），且说服判定用「对方好感度」这个正确的键。
+        # 审查 L1：旧存档角色可能没有 affinity 字段，也照样覆盖（effective_affinity 会按默认值算）。
         chars = self.state.data.get("characters") or {}
         affinity_key = {"relationship": "当前好感度", "persuasion": "对方好感度"}.get(jtype)
-        if affinity_key and subject in chars and isinstance(chars[subject].get("affinity"), (int, float)):
+        if affinity_key and isinstance(chars.get(subject), dict):
             turn = self.state.data.get("meta", {}).get("turn", 0)
             eff = dynamics_module.effective_affinity(chars[subject], turn)
             factors[affinity_key] = int(round((eff - 50) / 50 * 3))
@@ -544,7 +552,7 @@ class Game:
         attrs = d.setdefault("player", {}).setdefault("attributes", {})
 
         # 休养回血（代码结算，模型不能改）
-        max_hp = attrs.get("max_hp") if isinstance(attrs.get("max_hp"), (int, float)) else 100
+        max_hp = self._get_max_hp()
         hp = min(max_hp, self._get_hp() + seasons.heal_amount(max_hp, result["elapsed"], seclusion))
         attrs["hp"] = hp
 

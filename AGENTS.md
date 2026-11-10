@@ -44,7 +44,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**97 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**109 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -117,14 +117,14 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 664 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 800 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
-| `app.py` | 1425 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
+| `game.py` | 672 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `world_state.py` | 811 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `app.py` | 1433 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
 | `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
 | `world_gen.py` | 485 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
 | `main.py` | 385 | CLI 入口与菜单 |
-| `judgment.py` | 325 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
+| `judgment.py` | 327 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
 | `prompts.py` | 221 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
 | `tools.py` | 240 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
 | `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
@@ -282,7 +282,7 @@ Game._play_turn(player_input, add_user)
 | **判定** | `combat` | object | `enemy_name,enemy_power,action(fight\|flee)` **必填**；可选 `use_item,lethal` |
 | **判定** | `judgment` | object | `type` **必填**；可选 `subject` / `factors` / `use_item` / `certain_failure` / `reason` / `failure_consequence`（枚举 `setback\|injury\|death`）/ `failure_severity`（`light\|medium\|heavy`，`injury` 时由代码按生命上限比例结算） |
 | 动态 | `relationship_events` | array | `{subject, event}`，好感度由系统按事件表换算，**模型不写数值** |
-| 动态 | `attribute_events` | array | `{event}` 或 `{attribute, delta}` |
+| 动态 | `attribute_events` | array | `{event}` 或 `{attribute, delta}`；`hp`/`max_hp` 是系统独占，写入被忽略（审查 H1） |
 | 输出 | `options` | string[] | 结算后的 2~4 个显性选项；死亡时必须为空 |
 | 输出 | `turn_event` | string | 一句话本轮事件，进 `event_log` |
 | **岁月** | `time_block` | object | `plan`/`days` **必填**，`seclusion` 可选。声明"一段时间做什么"，**由代码按旬推进并结算**；模型不得自己跳时间，也不得在本次回复里写出这段经过 |
@@ -366,7 +366,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 97 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 109 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -487,7 +487,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 97 passed，再动手。
+1. **先跑基线测试**（§1），确认 109 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -502,7 +502,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，97 passed）
+# 全量测试（唯一可靠命令，109 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动

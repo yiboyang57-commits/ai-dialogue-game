@@ -303,7 +303,7 @@ pyinstaller game.spec
 已有“古玉护佑”天赋可抵挡一次致命战斗伤害，留下重伤；次数记录在 `player.death_protections_used`，之后不会靠模糊的冷却描述反复触发，也不能抵消无保护的千丈坠崖等环境死亡。
 已实现能力的默认次数表在 `judgment.DEATH_PROTECTIONS`；状态中的能力条目可显式设置 `death_protection_uses`（1~3次）。未实现的复活类能力不会由主持人临时发挥成无限免死。
 
-`judgment` 支持 `failure_consequence`（`setback` / `injury` / `death`）、`failure_damage`、`certain_failure` 和 `reason`。
+`judgment` 支持 `failure_consequence`（`setback` / `injury` / `death`）、`failure_severity`（`light` / `medium` / `heavy`，实际伤害由代码按生命上限比例结算）、`certain_failure` 和 `reason`。
 致命危险的识别仍由主持模型依据已有环境与能力声明，系统负责执行结算和死亡状态。
 第二阶段 API 失败会撤销该回合未完成的扣血、道具消耗与保底变化，可以重试；历史压缩失败则保留缓冲，下一轮继续尝试。
 

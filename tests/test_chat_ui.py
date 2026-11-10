@@ -7,9 +7,13 @@ from unittest.mock import patch
 from game import Game
 import memory
 from memory import Memory
-import streamlit as st
 import world_state
 from world_state import WorldState
+
+try:
+    import streamlit as st
+except ImportError:  # 没装 streamlit 时整个 UI 测试文件跳过，引擎测试仍可单独跑
+    st = None
 
 try:
     from streamlit.testing.v1 import AppTest
@@ -188,7 +192,8 @@ class SlotRestoreUITests(unittest.TestCase):
     def test_refresh_restores_game_from_query_slot(self, _slots):
         self._write_slot('临时-424242', turn=3)
         app = self._app()
-        with patch.object(st, 'query_params', _FakeQueryParams(slot='临时-424242')):
+        fake = _FakeQueryParams(slot='临时-424242')
+        with patch.object(st, 'query_params', fake):
             app.run()
         self.assertFalse(app.exception)
         game = app.session_state['game'] if 'game' in app.session_state else None
@@ -196,14 +201,49 @@ class SlotRestoreUITests(unittest.TestCase):
         self.assertEqual(game.state.data['meta']['turn'], 3)
         self.assertEqual(app.session_state['session_slot'], '临时-424242')
         self.assertTrue(any('已恢复上次的进度' in m.value for m in app.markdown))
+        self.assertEqual(fake['slot'], '临时-424242')  # 审查 L2：地址栏槽名被保留
 
     @patch('config.list_save_slots', return_value=[])
     def test_stale_slot_does_not_block_fresh_start(self, _slots):
         app = self._app()
-        with patch.object(st, 'query_params', _FakeQueryParams(slot='临时-999999')):
+        fake = _FakeQueryParams(slot='临时-999999')
+        with patch.object(st, 'query_params', fake):
             app.run()
         self.assertFalse(app.exception)
         self.assertNotIn('game', app.session_state)
+        self.assertNotIn('slot', fake)  # 失效槽名被清掉，新局不会写进它
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_corrupt_slot_is_not_overwritten(self, _slots):
+        """审查 M2：损坏存档不能被新局静默覆盖，地址栏槽名要清掉。"""
+        corrupt = Path(self.tmp.name) / 'state_临时-999999.json'
+        corrupt.write_text('{"meta": 半截', encoding='utf-8')
+        before = corrupt.read_bytes()
+        app = self._app()
+        fake = _FakeQueryParams(slot='临时-999999')
+        with patch.object(st, 'query_params', fake):
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertNotIn('game', app.session_state)
+        self.assertNotIn('slot', fake)
+        self.assertNotIn('session_slot', app.session_state)
+        self.assertTrue(any('已损坏' in w.value for w in app.warning))
+        self.assertEqual(corrupt.read_bytes(), before)  # 原文件未被覆盖
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_stop_world_clears_query_slot(self, _slots):
+        """审查 L2：「停止世界 → 不保存」后地址栏槽名必须清掉。"""
+        self._write_slot('临时-424242', turn=3)
+        app = self._app()
+        fake = _FakeQueryParams(slot='临时-424242')
+        with patch.object(st, 'query_params', fake):
+            app.run()
+            next(b for b in app.button if b.label == '停止世界').click().run()
+            next(b for b in app.button if b.label == '不保存').click().run()
+        self.assertFalse(app.exception)
+        self.assertNotIn('slot', fake)
+        self.assertNotIn('game', app.session_state)
+        self.assertNotIn('session_slot', app.session_state)
 
 
 if __name__ == '__main__':

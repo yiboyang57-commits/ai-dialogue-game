@@ -695,7 +695,10 @@ def session_slot():
 
 
 def restore_session_slot():
-    """刷新/新会话时按地址栏（或待恢复槽名）读档进会话（P1-12）。成功返回 True。"""
+    """刷新/新会话时按地址栏（或待恢复槽名）读档进会话（P1-12）。成功返回 True。
+
+    审查 M2：恢复失败时必须清掉地址栏槽名，否则玩家开新局会把同一个损坏/失效存档覆盖掉。
+    """
     if st.session_state.get("game") is not None:
         return False
     slot = st.session_state.pop("restore_slot", None) or _slot_from_query()
@@ -704,8 +707,13 @@ def restore_session_slot():
     try:
         state = WorldState.load(slot)
     except SaveCorruptError:
+        _set_slot_query(None)
+        st.session_state.pop("session_slot", None)
+        st.warning("上次的存档文件已损坏，已停止自动恢复，原文件不会被覆盖。"
+                   "如需抢救，可用「从设备导入」恢复之前导出的存档。")
         return False
     if state is None:
+        _set_slot_query(None)
         return False
     memory = Memory.load(slot)
     game = Game(state, memory, st.session_state.llm)
