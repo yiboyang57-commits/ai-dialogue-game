@@ -44,7 +44,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**57 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**91 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -117,21 +117,21 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 569 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 706 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
-| `app.py` | 1104 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
-| `gui.py` | 1148 | tkinter 图形版（**使用 legacy 固定目录**） |
-| `character_builder.py` | 582 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
-| `world_gen.py` | 417 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
-| `main.py` | 378 | CLI 入口与菜单 |
-| `judgment.py` | 267 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
+| `game.py` | 664 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `world_state.py` | 789 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `app.py` | 1425 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
+| `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
+| `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
+| `world_gen.py` | 485 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
+| `main.py` | 385 | CLI 入口与菜单 |
+| `judgment.py` | 325 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
 | `prompts.py` | 221 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
-| `tools.py` | 230 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
-| `combat.py` | 141 | 战斗/逃跑隐藏概率曲线 |
-| `config.py` | 116 | 路径、常量、存档槽、Key 读写 |
-| `llm_client.py` | 117 | urllib 直连 DeepSeek，tool calling 解析 |
+| `tools.py` | 240 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
+| `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
+| `config.py` | 145 | 路径、常量、存档槽、Key 读写 |
+| `llm_client.py` | 136 | urllib 直连 DeepSeek，tool calling 解析 |
 | `memory.py` | 85 | `recent`(最近3轮) + `buffer`(待压缩) |
-| `dynamics.py` | 60 | 好感度公式 + 关系/属性事件表 |
+| `dynamics.py` | 80 | 好感度公式 + 关系/属性事件表 |
 | `seasons.py` | 155 | **岁月模式**：按旬推进时间、掷小插曲/打断事件、回血与时长文案（纯函数 + 数据表） |
 | `save_bundle.py` | 57 | 网页版存档导出/导入 |
 | `gm_rules.py` / `gm_rules.json` | 51 | 主持人全局限制条件（与世界观解耦，可编辑） |
@@ -219,7 +219,7 @@ Game._play_turn(player_input, add_user)
   "world":  {"name","background","rules","style"},        // style = 主持文风，与世界观绑定
   "player": {
     "name","role_description",
-    "attributes": {},        // 内部数值：hp / max_hp / 境界... 不向玩家显性展示
+    "attributes": {},        // 内部数值：hp / max_hp / 境界... 不向玩家显性展示（max_hp 单轮变动钳制 0.5×~1.5×）
     "status_effects": [],    // ["受伤","疲惫"] —— 模型整表覆盖
     "talents": [],           // [{"name","description","tier","drawback"}]
     "physique": null,        // {"name","description","tier","drawback"} 单选
@@ -271,6 +271,7 @@ Game._play_turn(player_input, add_user)
 | 分类 | 字段 | 类型 | 备注 |
 |------|------|------|------|
 | 场景 | `location` / `location_description` / `time` | string | 时间不得无故跳天 |
+| 场景 | `days_passed` | integer | 0~9：本轮实际经过的整天数，计入日历与年龄（P1-11）；≥10 天必须走 `time_block` |
 | 玩家 | `player_attributes` | object | 只含变化的键；**`hp` 由代码保护覆盖** |
 | 玩家 | `player_status_effects` | string[] | **完整覆盖**，不是增量 |
 | 玩家 | `player_power` | number | 突破/升级时更新；**单次变化钳制 ±1 个 `realm_gap`**（P0-2；岁月结算按天数放宽到 `realm_gap×max(1,天数/180)`） |
@@ -279,7 +280,7 @@ Game._play_turn(player_input, add_user)
 | 背包 | `inventory_remove` | array | 按 `quantity` **扣减**，`remove_all:true` 才整类删除（货币别用）。容错：裸字符串 `"护身符"` 等价于扣 1；最终 `quantity<=0` 的条目被整体过滤 |
 | 剧情 | `plot_flags` / `current_goal` | object / string | 合并 |
 | **判定** | `combat` | object | `enemy_name,enemy_power,action(fight\|flee)` **必填**；可选 `use_item,lethal` |
-| **判定** | `judgment` | object | `type` **必填**；可选 `subject` / `factors` / `use_item` / `certain_failure` / `reason` / `failure_consequence`（枚举 `setback\|injury\|death`）/ `failure_damage`（整数，`injury` 时扣血） |
+| **判定** | `judgment` | object | `type` **必填**；可选 `subject` / `factors` / `use_item` / `certain_failure` / `reason` / `failure_consequence`（枚举 `setback\|injury\|death`）/ `failure_severity`（`light\|medium\|heavy`，`injury` 时由代码按生命上限比例结算） |
 | 动态 | `relationship_events` | array | `{subject, event}`，好感度由系统按事件表换算，**模型不写数值** |
 | 动态 | `attribute_events` | array | `{event}` 或 `{attribute, delta}` |
 | 输出 | `options` | string[] | 结算后的 2~4 个显性选项；死亡时必须为空 |
@@ -300,6 +301,7 @@ p     = sigmoid(logit)          # 钳制到 [0.001, 0.999]
 
 - **因素值**：模型声明为 **-3 ~ +3 整数**（超出会被 `max(-3,min(3,...))` 钳制）。
   未知因素名给温和默认权重 `0.3`（允许自定义因素）。
+- **因素堆叠上限**（P1-5）：未知因素合计贡献钳制在 ±1.5，全部因素合计钳制在 ±6 logit。
   **统一约定：因素值 = 对玩家的有利程度，所有权重必须为正**（测试锁死）。
   旧名「风险程度」「对方警觉度」通过 `FACTOR_ALIASES` 映射到「风险可控度」「对方松懈度」；
   因素名匹配会忽略 `/`、空格等（`factor_weight()`），所以「福缘运气」能匹配「福缘/运气」。
@@ -318,10 +320,12 @@ p     = sigmoid(logit)          # 钳制到 [0.001, 0.999]
   基础五五开的判定最高约 98%，堆再多高品级也不会变成必成功。
 - **道具** `ITEM_MODIFIERS`：`consumable:true` 的用后扣 1；非消耗的（如寻宝罗盘）**被动常驻加成**。
   `combat_power` 加战力、`combat`/`flee` 加战斗 logit、`flee_guarantee` 逃跑必成功。
-- **大保底**：同类判定**连续失败**达阈值 → `p = 1.0` 强制成功。计数在 `state.pity[jtype]`，**读档继续累计**。
-  成功则 `fails` 归零、`successes` +1；失败反之。
-- **不给保底的情况**（`game.py:310`）：`failure_consequence` 为 `injury` / `death` 时
-  `allow_pity=False`；`certain_failure=True` 直接 `return False, 0.0`（不掷骰、不吃保底、天赋救不了）。
+- **渐进保底**（P1-7）：同类判定连续失败会逐步提高成功率——每类按自己的保底阈值均分
+  `PITY_BONUS_MAX = 3.0` logit（如关系判定 12 次失败累计 +3），**不再达到阈值就 `p = 1.0` 必成**。
+  计数在 `state.pity[jtype]`，读档继续累计；成功则 `fails` 归零。
+- **不给保底的情况**（`game._handle_judgment`）：`failure_consequence` 为 `injury` / `death` 时
+  `allow_pity=False`（渐进保底也不生效）；`certain_failure=True` 直接 `return False, 0.0`
+  （不掷骰、不吃保底，天赋与保命能力都救不了）。
 - **保命能力** `DEATH_PROTECTIONS = {"古玉护佑": 1}`。条目可显式带 `death_protection_uses`(1~3)。
   致命**战斗伤害**与判定致死（`failure_consequence=death`，或 `injury` 把血扣到 0）都会先消耗
   （P0-3，共用 `game.Game._try_death_protection`）；`certain_failure=true` 的必死行为不触发。
@@ -352,8 +356,8 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 有效好感度 = 基础值 + 相识时长加成（每 5 回合 +1，封顶 +15）+ 关系事件增减，钳制 0~100
 ```
 - `RELATION_EVENTS`：救命之恩/并肩作战/共同经历/赠礼/相谈甚欢/冒犯/误会/欺骗/背弃 等。
-- 判定 `relationship` 时，若 `subject` 是已知角色，`game.py:287` 会自动把有效好感度换算成
-  `当前好感度` 因素（`(eff-50)/50*3` → -3~+3），除非模型已给出该因素。
+- 判定 `relationship` / `persuasion` 时，若 `subject` 是已知角色，`game._handle_judgment` 会把有效好感度
+  换算成 `当前好感度` / `对方好感度` 因素（`(eff-50)/50*3` → -3~+3），并**覆盖**模型声明（P1-6）。
 - `ATTRIBUTE_EVENTS`：声望/魅力/福缘/体力/修为 等按事件或显式 `delta` 增减。
 
 ---
@@ -362,7 +366,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 57 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 91 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -482,7 +486,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 57 passed，再动手。
+1. **先跑基线测试**（§1），确认 91 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -497,7 +501,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，57 passed）
+# 全量测试（唯一可靠命令，91 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动
