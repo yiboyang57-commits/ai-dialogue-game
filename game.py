@@ -74,6 +74,7 @@ class Game:
         # P2-16：压缩失败退避状态（不持久化，重开进程后重新计数即可）
         self._compress_failures = 0
         self._compress_skip_until = 0
+        self.storage_errors = 0  # 已提交 JSON、但未成功写入历史库的回合数
         self._last_roll = None  # SQLite 审计层用：本轮掷骰记录（战斗/判定），提交后清空
 
     def _refresh_system_prompt(self):
@@ -96,6 +97,7 @@ class Game:
                     self.state.data.get("meta", {}).get("turn", 0),
                 )
         except Exception:
+            storage.log_exception("读取历史记忆失败", self.state.data.get("meta", {}).get("turn", 0))
             return None
 
     def _turn_messages(self, player_input):
@@ -173,7 +175,8 @@ class Game:
                 summary=summary,
             )
         except Exception:
-            pass  # 审计/历史层失败不能影响游戏本身
+            self.storage_errors += 1
+            storage.log_exception("写入历史库失败", self.state.data.get("meta", {}).get("turn", 0))
         finally:
             self._last_roll = None
             self._state_before = None

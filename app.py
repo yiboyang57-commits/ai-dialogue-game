@@ -20,6 +20,7 @@ import character_builder
 import dynamics
 import save_bundle
 import seasons
+import storage
 import world_gen
 
 # ---------------------------------------------------------------- 主题与全局样式
@@ -1257,6 +1258,9 @@ if not st.session_state.get("_temp_slots_pruned"):
 
 # 侧边栏：存档管理（存档名 + 导出/导入），所有状态都可用
 render_save_sidebar()
+_storage_game = st.session_state.get("game")
+if storage.enabled() and _storage_game is not None and getattr(_storage_game, "storage_errors", 0) > 0:
+    st.sidebar.caption(f"历史库有 {_storage_game.storage_errors} 回合未写入")
 
 # 尚未开始游戏 → 主角构建页 / 世界观设置页
 if "game" not in st.session_state or st.session_state.game is None:

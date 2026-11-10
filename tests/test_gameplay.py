@@ -1484,6 +1484,43 @@ class StorageSQLiteTests(unittest.TestCase):
             if attr == "魅力":
                 self.assertEqual(resolve.call_args.args[1][factor], judgment.attribute_factor(10))
 
+    def test_storage_failure_logs_and_recovers_with_gap_snapshot(self):
+        game = Game(self._state(), memory.Memory(), Replies(("第一回合。", {}), ("第二回合。", {})), rules=[])
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            with patch.object(storage, "append_turn", side_effect=OSError("模拟磁盘故障")):
+                game.run_turn("前进")
+            self.assertEqual(game.storage_errors, 1)
+            self.assertEqual(world_state.WorldState.load().data["meta"]["turn"], 1)
+            log = Path(self.tmp.name, "wanjie.log").read_text()
+            self.assertIn("第 1 回", log)
+            self.assertIn("模拟磁盘故障", log)
+            self.assertIn("Traceback", log)
+            game.run_turn("继续")
+        with storage.SaveDB(config.db_path_for("")) as db:
+            self.assertEqual([r["kind"] for r in reversed(db.list_turns())], ["gap", "action"])
+            self.assertEqual(db.get_meta("last_successful_turn"), "2")
+            self.assertEqual(db.load_state(), world_state.WorldState.load().data)
+            self.assertEqual(db.stats()["snapshots"], 1)
+
+    def test_entity_write_failure_rolls_back_entire_database_turn(self):
+        import sqlite3
+        with storage.SaveDB(config.db_path_for("")) as db:
+            with patch.object(db, "_sync_entities", side_effect=sqlite3.OperationalError("模拟实体写失败")):
+                with self.assertRaises(sqlite3.OperationalError):
+                    db.record_turn(1, "action", "失败记录", state=self._state().data)
+            self.assertEqual(db.stats(), {"turns": 0, "snapshots": 0, "rolls": 0})
+            self.assertFalse(db.recall("失败记录")["turns"])
+            self.assertIsNone(db.get_meta("last_successful_turn"))
+
+    def test_recall_failure_is_logged_without_stopping_game(self):
+        game = Game(self._state(), memory.Memory(), Replies(("继续。", {})), rules=[])
+        with storage.SaveDB(config.db_path_for("")) as db:
+            db.record_turn(0, "action", "开头", state=game.state.data)
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}), patch.object(storage.SaveDB, "recall_for_turn", side_effect=RuntimeError("模拟检索故障")):
+            game.run_turn("继续")
+        self.assertEqual(game.storage_errors, 0)
+        self.assertIn("读取历史记忆失败", Path(self.tmp.name, "wanjie.log").read_text())
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},

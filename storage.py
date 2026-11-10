@@ -8,14 +8,18 @@
 - 「当前状态」= 最近快照 + 之后逐回合的确定性 JSON 差异（含代码侧结算）。
 
 开关：环境变量 `WANJIE_STORAGE=sqlite` 时才开启双写（默认关闭，行为与旧版完全一致）。
-写库失败一律静默（由 game 侧兜底），绝不影响游戏本身。
+写库失败由 game 侧记录日志和计数，绝不影响已保存的游戏本身。
 """
 import copy
 import json
+import logging
+import sys
 import os
 import re
 import sqlite3
 import time
+
+STORAGE_LOG_NAME = "wanjie.log"
 
 AUTO_TITLES = ("师姐", "师兄", "掌柜", "执事", "长老", "前辈", "道友")
 
@@ -103,6 +107,24 @@ CREATE INDEX IF NOT EXISTS idx_mentions_entity ON mentions(entity_id);
 def enabled():
     """是否开启 SQLite 双写（默认关闭，JSON 仍是主存储）。"""
     return (os.environ.get("WANJIE_STORAGE") or "").strip().lower() == "sqlite"
+
+
+def log_exception(message, turn_no=0):
+    """用标准库记录异常堆栈；日志本身写失败也不能破坏 JSON 主流程。"""
+    import config
+    logger = logging.getLogger("wanjie.storage")
+    try:
+        os.makedirs(config.SAVE_DIR, exist_ok=True)
+        handler = logging.FileHandler(os.path.join(config.SAVE_DIR, STORAGE_LOG_NAME), encoding="utf-8")
+        try:
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            record = logger.makeRecord(logger.name, logging.ERROR, __file__, 0,
+                                       "第 %s 回：%s", (turn_no, message), sys.exc_info())
+            handler.handle(record)
+        finally:
+            handler.close()
+    except Exception:
+        logger.exception("第 %s 回：%s（历史库日志也无法写入）", turn_no, message)
 
 
 def _now():
@@ -218,10 +240,7 @@ class SaveDB:
             self.conn.execute("ALTER TABLE aliases ADD COLUMN source TEXT NOT NULL DEFAULT 'declared'")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(turns)").fetchall()}
         if "summary" not in cols:
-            try:
-                self.conn.execute("ALTER TABLE turns ADD COLUMN summary TEXT")
-            except sqlite3.Error:
-                pass
+            self.conn.execute("ALTER TABLE turns ADD COLUMN summary TEXT")
         if self.fts_available:
             fts_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(turns_fts)").fetchall()}
             if "summary" not in fts_cols:
@@ -234,6 +253,7 @@ class SaveDB:
                         "INSERT INTO turns_fts(rowid, player_input, narrative, summary) "
                         "SELECT id, COALESCE(player_input,''), narrative, COALESCE(summary,'') FROM turns")
                 except sqlite3.Error:
+                    log_exception("重建全文索引失败，使用 LIKE 检索")
                     self.fts_available = False
 
     def _migrate_state_deltas(self):
@@ -271,6 +291,7 @@ class SaveDB:
                 "player_input, narrative, summary, tokenize='trigram')")
             return True
         except sqlite3.Error:
+            log_exception("全文索引不可用，使用 LIKE 检索")
             return False
 
     # ---- 基础 ----
@@ -292,6 +313,8 @@ class SaveDB:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.conn.rollback()
         self.close()
 
     # ---- 写入：一回合一个事务 ----
@@ -328,19 +351,14 @@ class SaveDB:
                 self.conn.execute("INSERT OR REPLACE INTO snapshots(turn_id, state_json) VALUES(?,?)",
                                   (turn_id, _dump(state)))
             if self.fts_available:
-                try:
-                    self.conn.execute(
-                        "INSERT INTO turns_fts(rowid, player_input, narrative, summary) VALUES(?,?,?,?)",
-                        (turn_id, player_input or "", str(narrative or ""),
-                         str(summary or "")))
-                except sqlite3.Error:
-                    pass
+                self.conn.execute(
+                    "INSERT INTO turns_fts(rowid, player_input, narrative, summary) VALUES(?,?,?,?)",
+                    (turn_id, player_input or "", str(narrative or ""), str(summary or "")))
             if isinstance(state, dict):
-                try:
-                    self._sync_entities(turn_id, turn_no, state_before, state,
-                                        player_input=player_input, narrative=narrative)
-                except sqlite3.Error:
-                    pass  # 实体/事实层失败不影响回合记录本身
+                self._sync_entities(turn_id, turn_no, state_before, state,
+                                    player_input=player_input, narrative=narrative)
+            if kind != "gap":
+                self.set_meta("last_successful_turn", turn_no)
         return turn_id
 
     # ---- 实体 / 事实 / 提及（路线图 §2.3） ----
@@ -560,6 +578,8 @@ class SaveDB:
                         "FROM turns_fts f JOIN turns t ON t.id=f.rowid "
                         "WHERE turns_fts MATCH ? ORDER BY rank LIMIT ?", (_fts_phrase(query), int(limit))).fetchall()]
                 except sqlite3.Error:
+                    latest = self.conn.execute("SELECT MAX(turn_no) FROM turns").fetchone()[0] or 0
+                    log_exception("全文检索失败，使用 LIKE 检索", latest)
                     hits = []
             if not hits:
                 hits = self._like_search(query, limit)
@@ -714,12 +734,20 @@ class SaveDB:
 
 
 def append_turn(db_path, **kwargs):
-    """打开→记录→关闭。供 game 双写使用（写库失败由调用方吞掉，不影响游戏）。"""
-    db = SaveDB(db_path)
-    try:
+    """写库前核对连续性；缺失原文只标缺口，不能用当前状态捏造历史。"""
+    with SaveDB(db_path) as db:
+        turn_no = int(kwargs.get("turn_no") or 0)
+        last = db.conn.execute("SELECT turn_no FROM turns ORDER BY id DESC LIMIT 1").fetchone()
+        previous_turn = last["turn_no"] if last else 0
+        if previous_turn != turn_no - 1 and turn_no > 1:
+            # 使用本轮开始时的 JSON 快照锚定缺口末尾，然后继续正常记录本轮。
+            anchor = kwargs.get("state_before")
+            if not isinstance(anchor, dict):
+                anchor = db.load_state() or {}
+            db.record_turn(turn_no - 1, "gap",
+                           f"历史库缺口：上一条记录为第 {previous_turn} 回，现从第 {turn_no} 回继续；缺失原文不可恢复。",
+                           state=anchor, update={})
         return db.record_turn(**kwargs)
-    finally:
-        db.close()
 
 
 def migrate_from_json(save_key="", save_dir=None):
@@ -777,11 +805,8 @@ def migrate_from_json(save_key="", save_dir=None):
         last_id = db.conn.execute("SELECT id FROM turns ORDER BY id DESC LIMIT 1").fetchone()["id"]
         db.record_snapshot(last_id, state_data)
         # 用最终状态补一遍实体/事实，保证迁移后可以直接查「某人现在什么态度」
-        try:
-            with db.conn:
-                db._sync_entities(last_id, turn_no, None, state_data)
-        except sqlite3.Error:
-            pass
+        with db.conn:
+            db._sync_entities(last_id, turn_no, None, state_data)
     finally:
         db.close()
     return db_path, turn_no

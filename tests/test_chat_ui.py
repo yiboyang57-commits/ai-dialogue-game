@@ -1,5 +1,6 @@
 """网页对话按时间排列，重试与终局沿用同一个输入流程。"""
 import tempfile
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -70,6 +71,17 @@ class ChatUITests(unittest.TestCase):
         app.run()
         self.assertFalse(app.exception)
         return app, game
+
+    @patch('config.list_save_slots', return_value=[])
+    def test_storage_failure_notice_only_when_enabled(self, _slots):
+        app, game = self.make_app()
+        game.storage_errors = 2
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            app.run()
+        self.assertTrue(any("历史库有 2 回合未写入" in c.value for c in app.caption))
+        with patch.dict(os.environ, {"WANJIE_STORAGE": ""}):
+            app.run()
+        self.assertFalse(any("历史库有 2 回合未写入" in c.value for c in app.caption))
 
     def messages(self, app):
         return [m.value for m in app.markdown if m.value.startswith('<div class="message">')]
