@@ -12,7 +12,8 @@ UPDATE_TOOL = {
         "name": "update_world_state",
         "description": (
             "在完成本轮叙事之后，用结构化方式更新持久化的世界状态。"
-            "只填写本轮发生变化的部分；未变化的字段可以省略，系统会自动保留原值。"
+            "只填写本次行动发生的变化；未变化的字段省略。已有初始物品不重复发放。"
+            "需要判定时先声明 combat 或 judgment，不提前记录胜负、战利品或后续行动。"
         ),
         "parameters": {
             "type": "object",
@@ -27,7 +28,7 @@ UPDATE_TOOL = {
                 },
                 "time": {
                     "type": "string",
-                    "description": "游戏内时间（若推进，例如“第二天清晨”）。",
+                    "description": "本次行动结束的游戏内时间。短动作保持原日期与时段，不擅自跳天；仅明确的等待/旅行/睡眠/闭关等长行动推进相应时间。",
                 },
                 "player_attributes": {
                     "type": "object",
@@ -50,7 +51,7 @@ UPDATE_TOOL = {
                     "type": "object",
                     "description": (
                         "发生变化的角色，键为角色名。可包含 description / attitude_toward_player(文字，如“友善”) / "
-                        "location / status 等字段，缺失字段保持原值。"
+                        "location / status / memory（值得记住的往事，一句话）等字段，缺失字段保持原值。"
                         "好感度请优先用 relationship_events 记录事件让系统换算，不要在这里写 affinity 数值。"
                     ),
                     "additionalProperties": {
@@ -61,12 +62,13 @@ UPDATE_TOOL = {
                             "location": {"type": "string"},
                             "status": {"type": "string"},
                             "affinity": {"type": "number", "description": "该角色对玩家的好感度（0~100，用于关系判定）。"},
+                            "memory": {"type": "string", "description": "本轮该角色会记住的一件与玩家有关的事（一句话，站在该角色角度），系统会追加到其往事里；没有就省略。"},
                         },
                     },
                 },
                 "inventory_add": {
                     "type": "array",
-                    "description": "本轮获得/增加的道具或货币（货币也是道具，用数量表示，如“金币”数量+50）。",
+                    "description": "本次行动实际新获得的数量增量。不能重复列出已有初始物品、背包现有数量，或尚未发生的战利品。",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -120,6 +122,10 @@ UPDATE_TOOL = {
                             "type": "string",
                             "description": "若玩家主动使用某件法宝/一次性道具（如“爆元丹”“护身符”），填道具名；否则省略。",
                         },
+                        "lethal": {
+                            "type": "boolean",
+                            "description": "默认true，生命耗尽会死亡。仅明确训练/切磋/非致命抓捕可为false；玩家不杀敌人不等于敌人不杀玩家。",
+                        },
                     },
                     "required": ["enemy_name", "enemy_power", "action"],
                 },
@@ -139,12 +145,22 @@ UPDATE_TOOL = {
                         "factors": {
                             "type": "object",
                             "description": (
-                                "影响因素及其有利程度（-3~+3 整数，负为不利，正为有利）。"
-                                "只填与本次判定相关的因素名，如 当前好感度 / 场景氛围契合 / 福缘运气 / 线索完整度 等。"
+                                "影响因素及其对玩家的有利程度（-3~+3 整数，负为不利，正为有利）。"
+                                "所有因素都按“对玩家是否有利”打分：风险很高、对方很警觉时填负数，"
+                                "例如 风险可控度=-3 表示极其危险、对方松懈度=+2 表示对方疏于防备。"
+                                "只填与本次判定相关的因素名，如 当前好感度 / 场景氛围契合 / 福缘运气 / 线索完整度 / 风险可控度 等。"
                             ),
                             "additionalProperties": {"type": "number"},
                         },
                         "use_item": {"type": "string", "description": "若主动使用某一次性道具，填道具名；否则省略。"},
+                        "failure_consequence": {
+                            "type": "string",
+                            "enum": ["setback", "injury", "death"],
+                            "description": "依据已有环境、能力和危险声明失败后果：普通受挫、受伤或死亡。致命风险不享受强制成功保底。",
+                        },
+                        "failure_damage": {"type": "integer", "minimum": 1, "description": "injury失败时扣除的生命。由系统结算，可能耗尽生命。"},
+                        "certain_failure": {"type": "boolean", "description": "确实没有成功/安全完成的现实条件时为true，不掷骰、不保底。不会飞且无缓冲地从千丈崖跳向尖石等必死行为必须填写true并将失败后果设为death。"},
+                        "reason": {"type": "string", "description": "本次风险与可行性的已有依据，不临时编造救援或隐藏能力。"},
                     },
                     "required": ["type"],
                 },
@@ -189,6 +205,24 @@ UPDATE_TOOL = {
                 "turn_event": {
                     "type": "string",
                     "description": "用一句话记录本轮关键事件，用于状态摘要。",
+                },
+                "time_block": {
+                    "type": "object",
+                    "description": (
+                        "玩家安排持续一段时间的事（修炼数日以上、闭关、经营、长途跋涉、等待数日以上等）时填写，"
+                        "由系统按旬推进时间并掷随机事件；你不要自己跳时间，也不要在本次回复里写出这段时间的经过。"
+                    ),
+                    "properties": {
+                        "plan": {"type": "string", "description": "这段时间做什么，一句话，如“在洞府修炼”“去坊市摆摊卖丹”。"},
+                        "days": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "计划天数：一旬10、一月30、一季90、半年180、一年360。"},
+                        "seclusion": {"type": "boolean", "description": "是否闭关（与外界隔绝，被打扰的概率低）。"},
+                    },
+                    "required": ["plan", "days"],
+                },
+                "offscreen": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "玩家并不知道的幕后进展（已知角色或势力在这段时间里做了什么），每条一句。主要在时间安排结算时填写。",
                 },
             },
         },

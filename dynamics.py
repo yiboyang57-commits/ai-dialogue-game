@@ -58,3 +58,23 @@ def effective_affinity(char, current_turn):
     if not isinstance(base, (int, float)):
         base = 0
     return clamp(int(base) + time_bonus(char, current_turn), 0, 100)
+
+
+# ---- 初始好感度：新角色按初次态度给一个起点（v2.19）----
+# 之前新角色好感从 0 开始，关系判定基础值又很低，几乎不可能成功。
+_ATTITUDE_HOSTILE = ("敌", "恨", "仇", "杀意", "厌恶", "鄙夷", "憎")
+_ATTITUDE_COLD = ("不友", "不善", "警惕", "怀疑", "冷淡", "戒备", "不屑", "冷漠", "提防", "敷衍")
+_ATTITUDE_WARM = ("友", "善", "亲", "敬", "爱", "喜", "感激", "信任", "热情", "倾慕", "好感", "依赖")
+INITIAL_AFFINITY = {"hostile": 10, "cold": 30, "neutral": 40, "warm": 55}
+
+
+def initial_affinity(attitude):
+    """根据态度文字给出初始好感度：敌视 10 / 冷淡警惕 30 / 中立 40 / 友善 55。"""
+    text = attitude if isinstance(attitude, str) else ""
+    if any(k in text for k in _ATTITUDE_HOSTILE):
+        return INITIAL_AFFINITY["hostile"]
+    if any(k in text for k in _ATTITUDE_COLD):
+        return INITIAL_AFFINITY["cold"]
+    if any(k in text for k in _ATTITUDE_WARM):
+        return INITIAL_AFFINITY["warm"]
+    return INITIAL_AFFINITY["neutral"]

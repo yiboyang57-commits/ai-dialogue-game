@@ -229,6 +229,72 @@ def load_template_from_text(content):
 
 # ---------------------------------------------------------------- 归一化
 
+def _normalize_characters(raw):
+    """角色支持多种手写格式，统一成 {名字: {description, ...}}。
+
+    - {"师父": {...}}            标准格式
+    - {"师父": "严厉的老道士"}    值为文字 → 作为描述
+    - [{"name": "师父", ...}]    列表 → 用 name 作键
+    - ["师父", "师妹"]           纯名字列表
+    """
+    out = {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = []
+        for it in raw:
+            if isinstance(it, dict) and isinstance(it.get("name"), str) and it["name"].strip():
+                info = {k: v for k, v in it.items() if k != "name"}
+                items.append((it["name"].strip(), info))
+            elif isinstance(it, str) and it.strip():
+                items.append((it.strip(), {}))
+    else:
+        return out
+    for name, info in items:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if isinstance(info, str):
+            info = {"description": info}
+        elif not isinstance(info, dict):
+            info = {}
+        clean = {k: v for k, v in info.items() if isinstance(v, str)}
+        aff = info.get("affinity")
+        if isinstance(aff, (int, float)) and not isinstance(aff, bool):
+            clean["affinity"] = int(aff)
+        out[name.strip()] = clean
+    return out
+
+
+def _normalize_inventory(raw):
+    """背包支持 [{"name","quantity"}]、["铁剑","干粮"]、{"灵石": 50} 三种写法。"""
+    out = []
+
+    def add(name, qty=1, desc=""):
+        if not isinstance(name, str) or not name.strip():
+            return
+        try:
+            qty = int(float(qty))
+        except (TypeError, ValueError):
+            qty = 1
+        if qty <= 0:
+            return
+        out.append({"name": name.strip(), "quantity": qty, "description": desc if isinstance(desc, str) else ""})
+
+    if isinstance(raw, dict):
+        for name, v in raw.items():
+            if isinstance(v, dict):
+                add(name, v.get("quantity", 1), v.get("description", ""))
+            else:
+                add(name, v if isinstance(v, (int, float, str)) and str(v).strip() else 1)
+    elif isinstance(raw, list):
+        for it in raw:
+            if isinstance(it, str):
+                add(it)
+            elif isinstance(it, dict):
+                add(it.get("name"), it.get("quantity", 1), it.get("description", ""))
+    return out
+
+
 def normalize_template(data):
     """把各种来源的设定归一化为标准模板，容忍常见字段别名与类型差异。"""
     if not isinstance(data, dict):
@@ -285,7 +351,9 @@ def normalize_template(data):
             "name": p.get("name", "") or "",
             "role_description": p.get("role_description", "") or data.get("role", "") or "",
             "attributes": attrs,
-            "status_effects": p.get("status_effects") or [],
+            "status_effects": ([p["status_effects"]] if isinstance(p.get("status_effects"), str)
+                               else [str(x) for x in p.get("status_effects") or [] if str(x).strip()]
+                               if isinstance(p.get("status_effects"), list) else []),
             "talents": talents,
             "physique": p.get("physique") or None,
             "golden_fingers": p.get("golden_fingers") if isinstance(p.get("golden_fingers"), list) else (
@@ -298,9 +366,9 @@ def normalize_template(data):
             "description": loc.get("description", "") or "",
         },
         "time": data.get("time", "") or "",
-        "characters": data.get("characters") or {},
-        "inventory": data.get("inventory") or [],
-        "plot_flags": data.get("plot_flags") or {},
+        "characters": _normalize_characters(data.get("characters")),
+        "inventory": _normalize_inventory(data.get("inventory")),
+        "plot_flags": data.get("plot_flags") if isinstance(data.get("plot_flags"), dict) else {},
         "current_goal": data.get("current_goal", "") or "",
         "combat": {
             "field": combat.get("field", "战力") or "战力",

@@ -57,7 +57,7 @@ JUDGMENT_TYPES = {
     },
     "sneak": {
         "base": -0.3,
-        "factors": {"身手/敏捷": 0.9, "环境掩护": 0.5, "对方警觉度": -0.6},
+        "factors": {"身手/敏捷": 0.9, "环境掩护": 0.5, "对方松懈度": 0.6},
         "pity": 6,
     },
     "craft": {
@@ -67,7 +67,7 @@ JUDGMENT_TYPES = {
     },
     "action": {
         "base": 0.0,
-        "factors": {"能力匹配": 1.0, "准备充分度": 0.5, "环境有利度": 0.4, "风险程度": -0.7},
+        "factors": {"能力匹配": 1.0, "准备充分度": 0.5, "环境有利度": 0.4, "风险可控度": 0.7},
         "pity": 8,
     },
 }
@@ -113,6 +113,23 @@ ITEM_MODIFIERS = {
     "锦囊妙计": {"insight": 1.5, "consumable": True},
     "破境丹": {"combat_power": 3.0, "consumable": True},
 }
+
+# 已实现的被动保命能力。次数持久化，不根据叙事中的模糊冷却自动补充。
+DEATH_PROTECTIONS = {"古玉护佑": 1}
+
+
+def death_protection_limits(player):
+    entries = list(player.get("talents") or [])
+    if player.get("physique"):
+        entries.append(player["physique"])
+    entries += player.get("golden_fingers") or ([player["golden_finger"]] if player.get("golden_finger") else [])
+    limits = {}
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, dict) else str(entry)
+        uses = entry.get("death_protection_uses", DEATH_PROTECTIONS.get(name, 0)) if isinstance(entry, dict) else DEATH_PROTECTIONS.get(name, 0)
+        if name and isinstance(uses, int) and not isinstance(uses, bool) and uses > 0:
+            limits[name] = min(uses, 3)
+    return limits
 
 
 def _sigmoid(z):
@@ -172,6 +189,9 @@ TIER_SCALE = {
 }
 
 
+TALENT_BONUS_CAP = 4.0  # 天赋类加成总和的上限（logit），v2.19
+
+
 def _name_and_tier(t):
     """从天赋条目里解出 (名字, 等级)。支持 str / (name, tier) / {"name","tier"}。"""
     if isinstance(t, dict):
@@ -197,36 +217,69 @@ def talent_bonus(category, talents):
             m = infer_modifier(name)
         scale = TIER_SCALE.get(tier, 1.0)
         total += (m.get("global", 0.0) + m.get(category, 0.0)) * scale
-    return total
+    # 软上限：天赋/体质/金手指叠得再多，单次判定的加成也不超过 ±TALENT_BONUS_CAP，
+    # 保证高等级很强（基础五五开的事约 98% 成功）但掷骰仍有意义。
+    return max(-TALENT_BONUS_CAP, min(TALENT_BONUS_CAP, total))
 
 
 def item_mods(name):
     return ITEM_MODIFIERS.get(name) or {}
 
 
-def compute_judgment_probability(jtype, factors, talents, item_bonus_logit, pity_failures):
+# 因素值统一约定：-3 很不利 ~ +3 很有利（与工具说明一致），所以所有权重都必须为正。
+# 旧因素名「风险程度」「对方警觉度」听起来是“越大越危险”，模型按约定会给负值，
+# 这里把它们当作别名，按“有利程度”解读，避免正负号反转。
+FACTOR_ALIASES = {
+    "风险程度": "风险可控度",
+    "风险": "风险可控度",
+    "对方警觉度": "对方松懈度",
+    "警觉度": "对方松懈度",
+}
+
+DEFAULT_FACTOR_WEIGHT = 0.3  # 未知因素给温和权重，允许自定义因素
+
+
+def _factor_key(name):
+    """因素名归一化：去掉 / ／ 、 空格，便于「福缘运气」匹配「福缘/运气」。"""
+    return "".join(ch for ch in str(name) if ch not in "/／、 ·")
+
+
+def factor_weight(jtype, name):
+    spec = JUDGMENT_TYPES.get(jtype) or JUDGMENT_TYPES[DEFAULT_JUDGMENT]
+    name = FACTOR_ALIASES.get(str(name).strip(), str(name).strip())
+    wanted = _factor_key(name)
+    for known, w in spec["factors"].items():
+        if _factor_key(known) == wanted:
+            return w
+    return DEFAULT_FACTOR_WEIGHT
+
+
+def compute_judgment_probability(jtype, factors, talents, item_bonus_logit, pity_failures, allow_pity=True):
     """拟合概率（未掷骰），pity_failures 达到保底阈值时返回 1.0。"""
     spec = JUDGMENT_TYPES.get(jtype) or JUDGMENT_TYPES[DEFAULT_JUDGMENT]
     logit = spec["base"]
-    fw = spec["factors"]
     for name, val in (factors or {}).items():
-        w = fw.get(name, 0.3)  # 未知因素给温和权重，允许自定义因素
+        w = factor_weight(jtype, name)
         try:
-            logit += w * float(val)
+            value = float(val)
+            if math.isfinite(value):
+                logit += w * max(-3, min(3, value))
         except (TypeError, ValueError):
             pass
     logit += talent_bonus(jtype, talents)
     logit += item_bonus_logit or 0.0
 
-    if (pity_failures or 0) >= spec["pity"]:
+    if allow_pity and (pity_failures or 0) >= spec["pity"]:
         return 1.0  # 大保底
     return min(max(_sigmoid(logit), 0.001), 0.999)
 
 
-def resolve_judgment(jtype, factors, talents, item_bonus_logit, pity):
+def resolve_judgment(jtype, factors, talents, item_bonus_logit, pity, allow_pity=True, certain_failure=False):
     """掷骰判定，更新保底计数，返回 (成功?, 概率)。"""
+    if certain_failure:
+        return False, 0.0
     fails = (pity or {}).get("fails", 0)
-    p = compute_judgment_probability(jtype, factors, talents, item_bonus_logit, fails)
+    p = compute_judgment_probability(jtype, factors, talents, item_bonus_logit, fails, allow_pity)
     success = random.random() < p
 
     if success:
@@ -243,4 +296,4 @@ def judgment_brief(jtype, success, subject):
     s = subject or "该次尝试"
     if success:
         return f"系统判定：{s}——【成功】。请据此叙述成功的具体表现与结果。"
-    return f"系统判定：{s}——【失败】。请据此叙述失败的表现与后果（保留后续再次尝试的空间）。"
+    return f"系统判定：{s}——【失败】。请据此叙述本次行动的直接后果，不能虚构成功或继续执行下一件事。"

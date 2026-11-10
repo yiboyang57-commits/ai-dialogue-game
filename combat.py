@@ -130,13 +130,12 @@ def gm_brief(result, hp_before):
     """给主持人的定性简报（不含概率、不含战力公式）。"""
     sev = _severity(result["player_damage"], hp_before)
     o = result["outcome"]
+    death = " 玩家生命已耗尽，已死亡，本次人生结束；不得改为昏迷、获救或觉醒。" if result["player_down"] else ""
     if o == "win":
-        return f"系统判定：玩家【胜利】，敌方被击败；玩家负伤程度：{sev}。"
+        return f"系统判定：玩家【胜利】，敌方被击败；玩家负伤程度：{sev}。" + death
     if o == "lose":
         s = f"系统判定：玩家【落败】；玩家负伤程度：{sev}。"
-        if result["player_down"]:
-            s += " 玩家生命值已耗尽（倒下/濒死），请据此公平处理后续（被俘、昏迷或死亡等）。"
-        return s
+        return s + death
     if o == "flee_success":
         return "系统判定：玩家【成功逃脱】，无伤脱离战斗。"
-    return f"系统判定：玩家【逃脱失败】，受到攻击，负伤程度：{sev}；仍处于战斗威胁中。"
+    return f"系统判定：玩家【逃脱失败】，受到攻击，负伤程度：{sev}。" + (death or "仍处于战斗威胁中。")

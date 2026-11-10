@@ -5,10 +5,9 @@
 - buffer：累积待压缩的轮次，达到 COMPRESS_EVERY_TURNS 轮后交给模型压缩成摘要，
   摘要写回 world_state.narrative_summary，buffer 清空。
 """
-import json
 import os
 
-from config import SAVE_DIR, KEEP_RECENT_ENTRIES, COMPRESS_EVERY_TURNS, save_slot_suffix
+from config import SAVE_DIR, KEEP_RECENT_ENTRIES, COMPRESS_EVERY_TURNS, save_slot_suffix, write_json_atomic, read_json_save, SaveCorruptError
 
 
 class Memory:
@@ -71,15 +70,16 @@ class Memory:
         return os.path.join(SAVE_DIR, "history" + save_slot_suffix(self.save_key) + ".json")
 
     def save(self):
-        os.makedirs(SAVE_DIR, exist_ok=True)
-        with open(self.history_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.history_path, self.to_dict())
 
     @classmethod
     def load(cls, save_key=""):
+        """读取对话记录。记录损坏时返回空记录：世界状态才是一致性来源，只会少最近几轮原文。"""
         key = save_key or ""
         path = os.path.join(SAVE_DIR, "history" + save_slot_suffix(key) + ".json")
         if not os.path.exists(path):
             return cls(save_key=key)
-        with open(path, "r", encoding="utf-8") as f:
-            return cls.from_dict(json.load(f), save_key=key)
+        try:
+            return cls.from_dict(read_json_save(path), save_key=key)
+        except SaveCorruptError:
+            return cls(save_key=key)

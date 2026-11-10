@@ -26,6 +26,34 @@ def cacert_path():
     return os.path.join(base, "cacert.pem")
 
 
+class SaveCorruptError(ValueError):
+    """存档文件存在但无法解析（写入中断、被同步软件改坏等）。"""
+
+
+def write_json_atomic(path, data):
+    """先写临时文件再整体替换，避免写到一半被打断时留下半截 JSON。"""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, "." + os.path.basename(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def read_json_save(path):
+    """读取存档 JSON；文件损坏时抛出 SaveCorruptError（带文件名，便于提示玩家）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise SaveCorruptError(f"存档文件已损坏，无法读取：{os.path.basename(path)}") from e
+    if not isinstance(data, dict):
+        raise SaveCorruptError(f"存档文件格式不对：{os.path.basename(path)}")
+    return data
+
+
 def save_slot_suffix(save_key=""):
     """把存档名转成安全的后缀（空返回 ""），用于状态/记忆文件命名空间。
 
@@ -99,9 +127,10 @@ def save_api_key(key):
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             data = {}
+    if not isinstance(data, dict):
+        data = {}
     data["api_key"] = key.strip()
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(CONFIG_PATH, data)
 
 
 def load_model():

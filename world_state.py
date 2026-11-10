@@ -3,12 +3,15 @@
 这是“结构化状态管理”的核心：一致性不依赖完整对话历史，
 而是依赖这份不断被 update_world_state 工具更新的 JSON。
 """
-import json
 import os
 import time
 
-from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix
-from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp
+import seasons
+from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic, read_json_save
+from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
+from judgment import death_protection_limits
+
+MAX_OFFSCREEN = 10         # 幕后进展最多保留条数（玩家看不到原文，只列给模型）
 
 
 class WorldState:
@@ -32,6 +35,7 @@ class WorldState:
                 "talents": [],          # 天赋列表 [{"name","description","tier","drawback"}]，影响判定系数
                 "physique": None,       # 体质 {"name","description","tier","drawback"} 或 None（主角构建自选）
                 "golden_fingers": [],   # 金手指列表 [{"name","description","tier","drawback"}]（可 1~3 个）
+                "life_status": "alive",
             },
             "initial_situation": "",
             "location": {"name": "", "description": ""},
@@ -53,6 +57,9 @@ class WorldState:
             "pity": {},                 # 判定保底计数 {类型: {"fails": n, "successes": n}}
             "custom": {},               # 玩家自定义上传世界的额外字段（保留不丢弃）
             "options": [],              # 本轮结束时给玩家的“显而易见”选项
+            "calendar": {"days": 0},    # 开局以来经过的天数（岁月模式按旬累加，由代码结算）
+            "offscreen": [],            # 玩家不知道的幕后进展（只给模型看，最多 MAX_OFFSCREEN 条）
+            "pending_block": None,      # 被打断且还有剩余的时间安排 {plan, remaining, seclusion}
         }
 
     # ---- 初始化：应用世界观模板 ----
@@ -73,6 +80,9 @@ class WorldState:
         if "hp" not in d["player"]["attributes"]:
             d["player"]["attributes"]["hp"] = d["player"]["attributes"]["max_hp"]
         d["player"]["status_effects"] = p.get("status_effects") or []
+        d["player"]["life_status"] = "alive"
+        d["player"].pop("death_cause", None)
+        d["player"].pop("death_protections_used", None)
         d["player"]["talents"] = p.get("talents") or template.get("talents") or []
         d["player"]["physique"] = p.get("physique") or None
         # 金手指：支持新的列表字段 golden_fingers，也兼容旧的单字段 golden_finger
@@ -91,7 +101,15 @@ class WorldState:
         d["location"]["description"] = loc.get("description", "") or ""
 
         d["time"] = template.get("time", "") or ""
-        d["characters"] = template.get("characters") or {}
+        d["characters"] = {}
+        for name, info in (template.get("characters") or {}).items():
+            if isinstance(name, str) and name.strip():
+                char = {}
+                if isinstance(info, dict):
+                    char = {k: v for k, v in info.items() if isinstance(v, str)}  # 保留模板里的额外文字字段
+                    char.update(_sanitize_character(info))
+                _ensure_affinity(char, 0)
+                d["characters"][name.strip()] = char
         d["inventory"] = template.get("inventory") or []
         d["plot_flags"] = template.get("plot_flags") or {}
         d["current_goal"] = template.get("current_goal", "") or ""
@@ -126,22 +144,41 @@ class WorldState:
         self.data["meta"]["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     def save(self):
-        os.makedirs(SAVE_DIR, exist_ok=True)
         self.touch()
         self.data["meta"]["save_key"] = self.save_key
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.state_path, self.data)
 
     @classmethod
     def load(cls, save_key=""):
+        """读档；没有存档返回 None，存档损坏抛 config.SaveCorruptError。"""
         key = save_key or ""
         path = os.path.join(SAVE_DIR, "state" + save_slot_suffix(key) + ".json")
         if not os.path.exists(path):
             return None
-        with open(path, "r", encoding="utf-8") as f:
-            return cls(json.load(f), save_key=key)
+        return cls(read_json_save(path), save_key=key)
 
     # ---- 元信息 ----
+    @property
+    def is_dead(self):
+        p = self.data.get("player") or {}
+        hp = (p.get("attributes") or {}).get("hp")
+        return p.get("life_status") == "dead" or (isinstance(hp, (int, float)) and hp <= 0)
+
+    def mark_dead(self, cause):
+        p = self.data.setdefault("player", {})
+        p["life_status"] = "dead"
+        p["death_cause"] = p.get("death_cause") or cause or "生命耗尽"
+        p.setdefault("attributes", {})["hp"] = 0
+        p["status_effects"] = ["死亡"]
+        self.data["options"] = []
+        self.data["current_goal"] = "本次人生已结束"
+
+    def protection_summary(self):
+        player = self.data.get("player") or {}
+        used = player.get("death_protections_used") or {}
+        return [name + ("：已耗尽，不能再抵挡致命一击" if used.get(name, 0) >= limit else "：尚可抵挡致命一击（剩余" + str(limit - used.get(name, 0)) + "次）")
+                for name, limit in death_protection_limits(player).items()]
+
     def bump_turn(self):
         self.data["meta"]["turn"] += 1
 
@@ -176,6 +213,8 @@ class WorldState:
         status_str = "、".join(status) if status else "无"
         lines.append(f"- 玩家：{p.get('name') or '你'}（{p.get('role_description') or '未设定'}）")
         lines.append(f"  属性：{attr_str}；状态：{status_str}")
+        if self.is_dead:
+            lines.append("  生命状态：已死亡；死因：" + (p.get("death_cause") or "生命耗尽"))
 
         physique = p.get("physique") or {}
         gf_names = [g.get("name") for g in (p.get("golden_fingers") or []) if isinstance(g, dict) and g.get("name")]
@@ -186,7 +225,7 @@ class WorldState:
         turn = d.get("meta", {}).get("turn", 0)
         if chars:
             lines.append(f"- 已知角色（共 {len(chars)} 位）：")
-            for name, info in list(chars.items())[:12]:
+            for name, info in _characters_for_summary(chars, (loc.get("name") or ""), 12):
                 bits = []
                 if info.get("attitude_toward_player"):
                     bits.append(f"态度={info['attitude_toward_player']}")
@@ -202,6 +241,9 @@ class WorldState:
                 if bits:
                     line += "（" + "，".join(bits) + "）"
                 lines.append(line)
+                memories = [m for m in (info.get("memories") or []) if isinstance(m, str)]
+                if memories:
+                    lines.append("    往事：" + "；".join(memories[-3:]))
             if len(chars) > 12:
                 lines.append("  …（其余角色略）")
         else:
@@ -226,6 +268,21 @@ class WorldState:
 
         if d.get("current_goal"):
             lines.append(f"- 当前目标：{d['current_goal']}")
+
+        cal = d.get("calendar") or {}
+        days = safe_int(cal.get("days"), 0) or 0
+        if days > 0:
+            lines.append("- 开局以来已过：" + seasons.span_text(days))
+        pend = d.get("pending_block") or {}
+        if pend.get("plan"):
+            lines.append("- 被打断的安排：" + str(pend["plan"])
+                         + "（还剩" + seasons.span_text(safe_int(pend.get("remaining"), 0) or 0)
+                         + "，玩家可以选择继续）")
+        off = [s for s in (d.get("offscreen") or []) if isinstance(s, str)]
+        if off:
+            lines.append("- 幕后进展（玩家并不知道，只能通过合理途径逐步透露）：")
+            for s in off[-5:]:
+                lines.append("  · " + s)
 
         last_combat = d.get("last_combat")
         if last_combat:
@@ -252,6 +309,8 @@ class WorldState:
 
     # ---- 面向玩家的“去数据化”摘要（不显示 hp/战力/概率等内部数值） ----
     def _hp_band(self):
+        if self.is_dead:
+            return "死亡"
         attrs = self.data.get("player", {}).get("attributes") or {}
         hp = attrs.get("hp")
         maxhp = attrs.get("max_hp") or 100
@@ -259,7 +318,7 @@ class WorldState:
             return None
         ratio = hp / max(maxhp, 1)
         if ratio <= 0:
-            return "濒死"
+            return "死亡"
         if ratio < 0.25:
             return "重伤"
         if ratio < 0.6:
@@ -301,6 +360,10 @@ class WorldState:
         talent_str = "、".join(talents) if talents else "无"
         lines.append(f"- 玩家：{p.get('name') or '你'}（{p.get('role_description') or '未设定'}）")
         lines.append(f"  状态：{status_str}；天赋：{talent_str}")
+        if self.is_dead:
+            lines.append("  结局：死亡；死因：" + (p.get("death_cause") or "生命耗尽"))
+        if self.protection_summary():
+            lines.append("  保命能力：" + "；".join(self.protection_summary()))
         physique = p.get("physique") or {}
         gf_names = [g.get("name") for g in (p.get("golden_fingers") or []) if isinstance(g, dict) and g.get("name")]
         if physique.get("name") or gf_names:
@@ -359,6 +422,16 @@ class WorldState:
         if d.get("current_goal"):
             lines.append(f"- 当前目标：{d['current_goal']}")
 
+        cal = d.get("calendar") or {}
+        days = safe_int(cal.get("days"), 0) or 0
+        if days > 0:
+            lines.append("- 开局以来已过：" + seasons.span_text(days))
+        pend = d.get("pending_block") or {}
+        if pend.get("plan"):
+            lines.append("- 被打断的安排：" + str(pend["plan"])
+                         + "（还剩" + seasons.span_text(safe_int(pend.get("remaining"), 0) or 0)
+                         + "，玩家可以选择继续）")
+
         last_combat = d.get("last_combat")
         if last_combat:
             outcome_cn = {"win": "胜利", "lose": "落败", "flee_success": "成功逃脱", "flee_fail": "逃脱失败"}.get(
@@ -383,6 +456,15 @@ class WorldState:
         return "\n".join(lines)
 
 
+def _characters_for_summary(chars, location_name, limit):
+    """摘要里展示哪些角色：先列在当前地点的，再按最近互动倒序补足，避免新认识的人被挤掉。"""
+    items = [(n, c) for n, c in chars.items() if isinstance(c, dict)]
+    here = [(n, c) for n, c in items if location_name and c.get("location") and
+            (c["location"] in location_name or location_name in c["location"])]
+    rest = [(n, c) for n, c in reversed(items) if (n, c) not in here]
+    return (here + rest)[:limit]
+
+
 def _sanitize_character(info):
     """清理角色字段类型：态度应为文字、好感度为数字，防止模型把数值误塞进态度等。"""
     if not isinstance(info, dict):
@@ -403,7 +485,62 @@ def _sanitize_character(info):
         v = info.get(k)
         if isinstance(v, int) and not isinstance(v, bool):
             out[k] = v
+    if isinstance(info.get("memories"), list):
+        out["memories"] = [str(m).strip() for m in info["memories"] if isinstance(m, str) and m.strip()][-MAX_CHARACTER_MEMORIES:]
     return out
+
+
+MAX_CHARACTER_MEMORIES = 8   # 每个角色最多保留的往事条数（摘要里只带最近 3 条）
+
+
+def _add_memory(char, memory):
+    """给角色追加一条“与玩家的往事”，去重并滚动保留最近 MAX_CHARACTER_MEMORIES 条。"""
+    if not isinstance(memory, str) or not memory.strip():
+        return
+    memory = memory.strip()[:80]
+    memories = [m for m in (char.get("memories") or []) if isinstance(m, str)]
+    if memory in memories:
+        return
+    memories.append(memory)
+    char["memories"] = memories[-MAX_CHARACTER_MEMORIES:]
+
+
+def _ensure_affinity(char, turn):
+    """角色第一次被记录时，按态度给初始好感度并记下相识回合。"""
+    if not isinstance(char.get("affinity"), (int, float)) or isinstance(char.get("affinity"), bool):
+        char["affinity"] = initial_affinity(char.get("attitude_toward_player"))
+    if not isinstance(char.get("met_turn"), int):
+        char["met_turn"] = turn
+
+
+def safe_int(value, default=None):
+    """把数字或数字字符串转成 int；转不了返回 default（模型偶尔会给出“三”“筑基初期”之类）。"""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return int(value) if value == value and value not in (float("inf"), float("-inf")) else default
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return default
+    return default
+
+
+def _as_item(item):
+    """背包条目容错：裸字符串视为 1 个；不是对象/字符串的丢弃。"""
+    if isinstance(item, str):
+        return {"name": item.strip(), "quantity": 1} if item.strip() else None
+    return item if isinstance(item, dict) else None
+
+
+def _as_str_list(value):
+    """状态效果 / 选项：字符串视为单项，列表逐项转字符串，其它丢弃。"""
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if v is not None and str(v).strip()]
+    return None
 
 
 def apply_update(state, update):
@@ -411,75 +548,98 @@ def apply_update(state, update):
 
     采用“增量合并”策略：只改动模型明确给出的字段，未给出的保持不变，
     避免模型每次都要复述完整状态而出错。
+    对字段类型做容错：格式不对的单项跳过，不让整轮报错。
     """
+    if not isinstance(update, dict):
+        return state
     d = state.data
+    player = d.setdefault("player", {})
+    attrs = player.setdefault("attributes", {})
+    if not isinstance(d.get("characters"), dict):
+        d["characters"] = {}
+    if not isinstance(d.get("inventory"), list):
+        d["inventory"] = []
+    if not isinstance(d.get("plot_flags"), dict):
+        d["plot_flags"] = {}
+    if not isinstance(d.get("location"), dict):
+        d["location"] = {"name": "", "description": ""}
 
-    if update.get("location"):
-        d["location"]["name"] = update["location"]
-    if update.get("location_description"):
-        d["location"]["description"] = update["location_description"]
-    if update.get("time"):
+    for key, target in (("location", "name"), ("location_description", "description")):
+        if update.get(key) and isinstance(update[key], str):
+            d["location"][target] = update[key]
+    if update.get("time") and isinstance(update["time"], str):
         d["time"] = update["time"]
 
-    if update.get("player_attributes"):
-        d["player"]["attributes"].update(update["player_attributes"])
-    if "player_status_effects" in update and update["player_status_effects"] is not None:
-        d["player"]["status_effects"] = list(update["player_status_effects"])
+    if isinstance(update.get("player_attributes"), dict):
+        attrs.update(update["player_attributes"])
+    if "player_status_effects" in update:
+        effects = _as_str_list(update["player_status_effects"])
+        if effects is not None:
+            player["status_effects"] = effects
 
     # 角色：按名字 upsert，字段做类型守卫，缺失字段保留原值
-    if update.get("characters"):
+    turn = d.get("meta", {}).get("turn", 0)
+    if isinstance(update.get("characters"), dict):
         for name, info in update["characters"].items():
+            if not isinstance(name, str) or not name.strip():
+                continue
             clean = _sanitize_character(info)
-            if not clean:
+            memory = info.get("memory") if isinstance(info, dict) else None
+            if not clean and not (isinstance(memory, str) and memory.strip()):
                 continue
             existing = d["characters"].get(name)
-            if existing:
+            if isinstance(existing, dict) and existing:
                 existing.update(clean)
+                target = existing
             else:
-                d["characters"][name] = clean
+                target = d["characters"][name] = clean
+            _ensure_affinity(target, turn)
+            _add_memory(target, memory)
+            d["characters"][name] = d["characters"].pop(name)  # 最近互动的角色排到最后，摘要优先展示
 
     # 背包：新增按名字累加数量
-    for item in update.get("inventory_add") or []:
-        name = item.get("name")
-        if not name:
+    for raw in update.get("inventory_add") or []:
+        item = _as_item(raw)
+        if not item or not item.get("name"):
             continue
-        qty = int(item.get("quantity", 1) or 1)
-        found = next((i for i in d["inventory"] if i.get("name") == name), None)
+        name = item["name"]
+        qty = max(1, safe_int(item.get("quantity"), 1) or 1)
+        found = next((i for i in d["inventory"] if isinstance(i, dict) and i.get("name") == name), None)
         if found:
-            found["quantity"] = int(found.get("quantity", 1)) + qty
+            found["quantity"] = safe_int(found.get("quantity"), 1) + qty
         else:
             d["inventory"].append({
                 "name": name,
                 "quantity": qty,
-                "description": item.get("description", ""),
+                "description": item.get("description", "") if isinstance(item.get("description"), str) else "",
             })
 
     # 背包：按数量扣减（支持货币）；remove_all 才整类移除
-    for item in update.get("inventory_remove") or []:
-        if isinstance(item, str):
-            item = {"name": item, "quantity": 1}  # 容错：裸字符串只扣 1，绝不整类删
-        name = item.get("name")
-        if not name:
+    for raw in update.get("inventory_remove") or []:
+        item = _as_item(raw)  # 容错：裸字符串只扣 1，绝不整类删
+        if not item or not item.get("name"):
             continue
-        remove_all = bool(item.get("remove_all"))
-        qty = int(item.get("quantity", 1) or 1)
+        name = item["name"]
+        remove_all = item.get("remove_all") is True
+        qty = max(1, safe_int(item.get("quantity"), 1) or 1)
         for entry in d["inventory"]:
-            if entry.get("name") == name:
+            if isinstance(entry, dict) and entry.get("name") == name:
                 if remove_all:
                     entry["quantity"] = 0
                 else:
-                    entry["quantity"] = int(entry.get("quantity", 1)) - qty
-    d["inventory"] = [i for i in d["inventory"] if int(i.get("quantity", 0)) > 0]
+                    entry["quantity"] = safe_int(entry.get("quantity"), 1) - qty
+    d["inventory"] = [i for i in d["inventory"] if isinstance(i, dict) and safe_int(i.get("quantity"), 1) > 0]
 
-    if update.get("plot_flags"):
+    if isinstance(update.get("plot_flags"), dict):
         d["plot_flags"].update(update["plot_flags"])
 
-    if update.get("current_goal"):
+    if update.get("current_goal") and isinstance(update["current_goal"], str):
         d["current_goal"] = update["current_goal"]
 
     # 玩家战力成长（突破/升级）
-    if "player_power" in update and isinstance(update["player_power"], (int, float)):
-        d.setdefault("combat", {})["player_power"] = update["player_power"]
+    power = update.get("player_power")
+    if isinstance(power, (int, float)) and not isinstance(power, bool):
+        d.setdefault("combat", {})["player_power"] = power
 
     # 关系事件：好感度动态增减（相识时长另由 time_bonus 派生）
     for ev in update.get("relationship_events") or []:
@@ -487,35 +647,60 @@ def apply_update(state, update):
             continue
         subject = ev.get("subject")
         event = ev.get("event")
-        if not subject or event not in RELATION_EVENTS:
+        if not isinstance(subject, str) or not subject or event not in RELATION_EVENTS:
             continue
-        c = d["characters"].setdefault(subject, {})
-        c["affinity"] = clamp(int(c.get("affinity", 0)) + RELATION_EVENTS[event], 0, 100)
-        c["interactions"] = int(c.get("interactions", 0)) + 1
-        if "met_turn" not in c:
-            c["met_turn"] = d["meta"]["turn"]
+        c = d["characters"].get(subject)
+        if not isinstance(c, dict):
+            c = d["characters"][subject] = {}
+        _ensure_affinity(c, turn)
+        c["affinity"] = clamp(safe_int(c.get("affinity"), 0) + RELATION_EVENTS[event], 0, 100)
+        c["interactions"] = safe_int(c.get("interactions"), 0) + 1
+        d["characters"][subject] = d["characters"].pop(subject)
 
-    # 属性事件：其它系数（声望/魅力/福缘/体力/修为…）动态增减
+    # 属性事件：其它系数（声望/魅力/福缘/体力/修为…）动态增减。
+    # 若该属性当前是文字（如 修为="筑基初期"），数值增减没有意义，跳过而不是报错。
+    def bump(attr, delta):
+        cur = attrs.get(attr, 0)
+        cur_int = safe_int(cur)
+        if cur_int is None:
+            return
+        attrs[attr] = cur_int + delta
+
     for ev in update.get("attribute_events") or []:
         if not isinstance(ev, dict):
             continue
         if "attribute" in ev and "delta" in ev:
-            attr = ev["attribute"]
-            try:
-                delta = int(ev["delta"])
-            except (TypeError, ValueError):
+            delta = safe_int(ev["delta"])
+            if delta is None or not isinstance(ev["attribute"], str):
                 continue
-            d["player"]["attributes"][attr] = int(d["player"]["attributes"].get(attr, 0)) + delta
+            bump(ev["attribute"], delta)
         else:
             deltas = ATTRIBUTE_EVENTS.get(ev.get("event")) or {}
             for attr, delta in deltas.items():
-                d["player"]["attributes"][attr] = int(d["player"]["attributes"].get(attr, 0)) + int(delta)
+                bump(attr, int(delta))
 
     # 本轮可选行动（显而易见选项，不含隐藏剧情触发）
-    if "options" in update and isinstance(update.get("options"), list):
-        d["options"] = [str(o) for o in update["options"] if str(o).strip()][:5]
+    if "options" in update:
+        options = _as_str_list(update["options"])
+        if options is not None:
+            d["options"] = options[:5]
+
+    # 幕后进展：只收字符串，去首尾空格、去重，追加并保留最近 MAX_OFFSCREEN 条。
+    # 这是玩家不知道的事（只进状态摘要给模型），绝不出现在 to_player_summary。
+    # time_block 不在这里处理 —— 它由 game._resolve_block 走两段式结算。
+    if "offscreen" in update:
+        items = _as_str_list(update["offscreen"])
+        if items is not None:
+            log = d.setdefault("offscreen", [])
+            known = {s for s in log if isinstance(s, str)}
+            for item in items:
+                if item not in known:
+                    log.append(item)
+                    known.add(item)
+            if len(log) > MAX_OFFSCREEN:
+                del log[: len(log) - MAX_OFFSCREEN]
 
     if update.get("turn_event"):
-        state.add_event(update["turn_event"])
+        state.add_event(str(update["turn_event"]))
 
     return state

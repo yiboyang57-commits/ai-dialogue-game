@@ -11,6 +11,8 @@ build_player() 把选择合并进世界观模板，返回新模板（不修改�
 """
 import copy
 import random
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ---------------------------------------------------------------- 天赋等级
@@ -62,6 +64,10 @@ TALENTS = [
 
 # 可选天赋数量上限
 MAX_TALENTS = 3
+HAND_SIZE = 9
+MIN_POOL_SIZE = 18
+POOL_VERSION = 3  # v3：去掉能力代价；旧会话里的候选池会被自动重新整理
+POOL_TARGET_COUNTS = {"talents": 24, "physiques": 18, "golden_fingers": 18}
 
 
 # ---------------------------------------------------------------- 体质
@@ -170,7 +176,6 @@ _POOL_ITEM_SCHEMA = {
         "name": {"type": "string", "description": "候选名字，贴合世界观题材。"},
         "description": {"type": "string", "description": "一句话效果说明。"},
         "tier": {"type": "string", "enum": TIERS, "description": "等级，白最弱、炫彩最强。"},
-        "drawback": {"type": "string", "description": "金/红/炫彩等高等级项必填的代价或负面效果；低等级可留空。"},
     },
     "required": ["name", "tier"],
 }
@@ -181,25 +186,28 @@ GENERATE_POOL_TOOL = {
         "name": "generate_character_pool",
         "description": (
             "根据给定世界观，生成一批该世界风格的『天赋 / 体质 / 金手指』候选池。"
-            "每个候选含 name、description、tier、drawback（drawback 仅高等级需要）。"
+            "每个候选含 name、description、tier。"
             "要求：名字必须原创、贴合世界观题材，不要复用任何内置预设名（如天命之子、先天道体、随身系统等）；"
             "等级分布以『金、紫』为最多（峰值在金紫之间），蓝次之，红、绿再次，白较少；"
-            "炫彩是举世无双、类似 bug 的逆天存在：每个类别通常只有 1 个，效果要极其夸张、颠覆性，"
-            "且必须带沉重的 drawback（代价/负面效果）。名字强弱与等级一致。"
-            "每个类别至少包含 1 个炫彩、2 个红、3 个金（越多越好、越多样越好），"
-            "且这些金/红/炫彩项都要写 drawback（代价/负面效果），越逆天的能力代价越沉重，避免变成无代价的爽游。"
+            "炫彩是举世无双、类似 bug 的逆天存在：每个类别通常只有 1 个，效果要极其夸张、颠覆性。"
+            "名字强弱与等级一致；本作偏爽快，能力不需要附带代价或负面效果。"
+            "每个类别至少包含 1 个炫彩、2 个红、3 个金（越多越好、越多样越好）。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "talents": {"type": "array", "description": "天赋候选，约 50 个：白约3、绿约5、蓝约9、紫约14、金约13、红约5、炫彩约2。", "items": _POOL_ITEM_SCHEMA},
-                "physiques": {"type": "array", "description": "体质候选，约 25 个：白约2、绿约3、蓝约5、紫约6、金约6、红约2、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
-                "golden_fingers": {"type": "array", "description": "金手指候选，约 30 个：白约2、绿约3、蓝约6、紫约8、金约8、红约3、炫彩约1。", "items": _POOL_ITEM_SCHEMA},
+                "talents": {"type": "array", "description": "24个名字不同的天赋，紫金较多，包含1炫彩、2红、至少3金。", "items": _POOL_ITEM_SCHEMA},
+                "physiques": {"type": "array", "description": "18个名字不同的体质，紫金较多，包含1炫彩、2红、至少3金。", "items": _POOL_ITEM_SCHEMA},
+                "golden_fingers": {"type": "array", "description": "18个名字不同的金手指，紫金较多，包含1炫彩、2红、至少3金。", "items": _POOL_ITEM_SCHEMA},
             },
             "required": ["talents", "physiques", "golden_fingers"],
         },
     },
 }
+
+# 能力代价开关：本作偏爽快，默认不给天赋/体质/金手指附带代价（v2.19）。
+# 改回 True 只会恢复候选上的代价文字；提示词里“代价必须在剧情中体现”的段落已删除，若要恢复需同步 prompts.py。
+ENABLE_DRAWBACKS = False
 
 # 每个候选池必须保底的高等级数量（安全底线，兜底表可覆盖）
 _POOL_FLOOR = {"炫彩": 1, "红": 2, "金": 3}
@@ -243,20 +251,25 @@ _LEGENDARY_SUPPLEMENT = {
 def _normalize_pool(args):
     """校验并清洗 LLM 返回的候选池，去掉非法条目，高等级漏写代价时补通用代价。"""
     out = {"talents": [], "physiques": [], "golden_fingers": []}
+    seen = set()
     for key in out:
-        for it in (args.get(key) or []):
+        values = args.get(key)
+        for it in values if isinstance(values, list) else []:
             if not isinstance(it, dict):
                 continue
-            name = (it.get("name") or "").strip()
-            if not name:
+            name = it.get("name")
+            name = name.strip() if isinstance(name, str) else ""
+            if not name or name.casefold() in seen:
                 continue
+            seen.add(name.casefold())
             tier = _canon_tier(it.get("tier"))
-            drawback = (it.get("drawback") or "").strip()
-            if not drawback and tier in _GENERIC_DRAWBACKS:
+            drawback = it.get("drawback") if ENABLE_DRAWBACKS else ""
+            drawback = drawback.strip() if isinstance(drawback, str) else ""
+            if ENABLE_DRAWBACKS and not drawback and tier in _GENERIC_DRAWBACKS:
                 drawback = _GENERIC_DRAWBACKS[tier]
             out[key].append({
                 "name": name,
-                "description": (it.get("description") or "").strip(),
+                "description": it["description"].strip() if isinstance(it.get("description"), str) else "",
                 "tier": tier,
                 "drawback": drawback,
             })
@@ -265,6 +278,7 @@ def _normalize_pool(args):
 
 def _ensure_floor(pool):
     """保证每个候选池至少有 1炫彩/2红/3金；不足则用本地兜底表补足。"""
+    all_names = {item["name"].casefold() for key in ("talents", "physiques", "golden_fingers") for item in pool.get(key, [])}
     for key in ("talents", "physiques", "golden_fingers"):
         items = pool.setdefault(key, [])
         counts = {}
@@ -277,9 +291,13 @@ def _ensure_floor(pool):
             for sup in _LEGENDARY_SUPPLEMENT.get(key, []):
                 if sup["tier"] != tier:
                     continue
-                if any(x["name"] == sup["name"] for x in items):
+                if sup["name"].casefold() in all_names:
                     continue
-                items.append(dict(sup))
+                entry = dict(sup)
+                if not ENABLE_DRAWBACKS:
+                    entry["drawback"] = ""
+                items.append(entry)
+                all_names.add(sup["name"].casefold())
                 have += 1
                 if have >= need:
                     break
@@ -314,6 +332,30 @@ _EXTRA_GOLDEN_FINGERS = [
     {"name": "创世编辑器", "description": "改写世界底层规则。", "tier": "炫彩", "drawback": "每次改动都引发无法预料的连锁反应。"},
 ]
 
+_EXTRA_TALENTS = [
+    {"name": "过目不忘", "description": "记住看过的药理、图谱与线索，学习时少走弯路。", "tier": "蓝"},
+    {"name": "灵觉敏锐", "description": "更容易察觉身边微弱的灵气和危险征兆。", "tier": "紫"},
+    {"name": "沉心静气", "description": "嘈杂和压力下仍能保持专注。", "tier": "绿"},
+    {"name": "断金巧手", "description": "手指灵巧，细致的修补与制作更顺手。", "tier": "蓝"},
+    {"name": "药理通识", "description": "辨认常见药材，判断简单配伍中的风险。", "tier": "蓝"},
+    {"name": "听风辨位", "description": "从脚步和风声判断附近动静。", "tier": "紫"},
+    {"name": "铁骨坚韧", "description": "长途劳作和受伤时更能撑住，但仍会受伤和死亡。", "tier": "蓝"},
+    {"name": "商道直觉", "description": "更容易识破虚价，察觉交易中的利益。", "tier": "紫"},
+    {"name": "绝境应变", "description": "遇险时保持判断，利用已有条件寻找退路。", "tier": "紫"},
+]
+
+_EXTRA_PHYSIQUES = [
+    {"name": "坚韧筋骨", "description": "筋骨结实，适合持续劳作。", "tier": "绿"},
+    {"name": "轻灵之身", "description": "身体轻巧，攀爬和闪避更灵活。", "tier": "蓝"},
+    {"name": "夜目灵瞳", "description": "弱光中也能辨认轮廓，无法看穿障碍。", "tier": "蓝"},
+    {"name": "寒暑耐体", "description": "更能适应寻常寒热，极端环境仍然危险。", "tier": "绿"},
+    {"name": "灵息通脉", "description": "灵气流转顺畅，适合循序渐进地修炼。", "tier": "紫"},
+    {"name": "石肤之躯", "description": "皮肤坚韧，能减轻寻常擦伤，不能免疫致命伤害。", "tier": "蓝"},
+    {"name": "明心之体", "description": "心神清明，修习时较少受杂念干扰。", "tier": "紫"},
+    {"name": "百炼经脉", "description": "经脉适合反复锤炼，需要长期投入。", "tier": "紫"},
+    {"name": "药灵之躯", "description": "对药材气味敏感，辅助辨药和炼制。", "tier": "紫"},
+]
+
 
 def _fallback_pool():
     """LLM 生成失败时，用内置预设凑一个候选池（保底）。"""
@@ -328,53 +370,120 @@ def _fallback_pool():
         "talents": [
             {"name": t["name"], "description": t["description"], "tier": _PRESET_TALENT_TIERS.get(t["name"], "蓝")}
             for t in TALENTS
-        ],
+        ] + copy.deepcopy(_EXTRA_TALENTS),
         "physiques": [
             {"name": p["name"], "description": p["description"], "tier": _PRESET_PHYSIQUE_TIERS.get(p["name"], "蓝")}
             for p in PHYSIQUES
-        ],
+        ] + copy.deepcopy(_EXTRA_PHYSIQUES),
         "golden_fingers": gfs,
     }
 
 
-def generate_pool(llm, template):
-    """调用 LLM 按世界观生成候选池；失败则回退到内置预设池。"""
+def prepare_pool(pool):
+    """去重并补足旧池、短池和失败池，保证9张候选之外还有可换的新选项。"""
+    clean = _normalize_pool(pool)
+    originals = {key: {item["name"].casefold() for item in items} for key, items in clean.items()}
+    _ensure_floor(clean)
+    fallback = _ensure_floor(_normalize_pool(_fallback_pool()))
+    seen = {item["name"].casefold() for items in clean.values() for item in items}
+    for key in clean:
+        for item in fallback[key]:
+            if len(clean[key]) >= MIN_POOL_SIZE:
+                break
+            if item["name"].casefold() not in seen:
+                clean[key].append(dict(item))
+                seen.add(item["name"].casefold())
+    meta = copy.deepcopy(pool.get("_meta") or {})
+    sources = meta.setdefault("sources", {})
+    for key, items in clean.items():
+        if not originals[key]:
+            sources[key] = "local"
+        elif any(item["name"].casefold() not in originals[key] for item in items):
+            sources[key] = "mixed" if sources.get(key) != "local" else "local"
+        else:
+            sources.setdefault(key, "mixed")
+    meta["version"] = POOL_VERSION
+    clean["_meta"] = meta
+    return clean
+
+
+def _category_tool(category):
+    tool = copy.deepcopy(GENERATE_POOL_TOOL)
+    parameters = tool["function"]["parameters"]
+    parameters["properties"] = {category: parameters["properties"][category]}
+    parameters["required"] = [category]
+    return tool
+
+
+def generate_pool(llm, template, previous_pool=None):
+    """分三次生成，避免整池超过输出上限；某类失败只补充该类的备用选项。"""
     w = (template.get("world") or {}) if isinstance(template, dict) else {}
     combat = (template.get("combat") or {}) if isinstance(template, dict) else {}
     bg = w.get("background") or ""
     rules = w.get("rules") or ""
     field = combat.get("field") or "战力"
-    msgs = [
-        {"role": "system", "content": "你是文字冒险游戏的设定生成器，只输出结构化的角色候选池，不输出多余文字。"},
-        {"role": "user", "content": (
-            "请为下面的世界观生成候选池，并调用 generate_character_pool 返回结果。\n\n"
-            f"世界观背景：{bg}\n世界规则：{rules}\n战力量纲：{field}\n"
-        )},
-    ]
-    try:
-        _content, name, args = llm.call_tool(msgs, GENERATE_POOL_TOOL, temperature=0.9, max_tokens=4096)
-        if name == "generate_character_pool" and isinstance(args, dict):
-            pool = _normalize_pool(args)
-            if pool["talents"] or pool["physiques"] or pool["golden_fingers"]:
-                return _ensure_floor(pool)
-    except Exception:
-        pass
-    return _ensure_floor(_fallback_pool())
+    pool = {key: [] for key in POOL_TARGET_COUNTS}
+    pool["_meta"] = {"sources": {}, "generation": uuid.uuid4().hex[:10]}
+    labels = {"talents": "天赋", "physiques": "体质", "golden_fingers": "金手指"}
+    def generate_category(key, count):
+        previous = [item.get("name") for item in (previous_pool or {}).get(key, []) if isinstance(item, dict)]
+        directions = random.sample(["探索", "生存", "战斗", "技艺", "交涉", "感知", "修行", "资源与机缘"], 3)
+        msgs = [
+            {"role": "system", "content": "你是文字冒险游戏的设定生成器，只调用指定工具返回结构化候选，不写额外叙事。"},
+            {"role": "user", "content": (
+                f"本次只生成{labels[key]}：{count}个不同名字，通过generate_character_pool返回{key}字段。不要生成其他类别。\n"
+                "每个描述用一个短句，控制在约25字以内，不写代价或负面效果。高等级保底1炫彩、2红、至少3金，紫金较多，其他等级也要有。\n"
+                f"创作方向：{'、'.join(directions)}。批次标记：{pool['_meta']['generation']}（不写进名字）。\n"
+                f"世界观背景：{bg}\n世界规则：{rules}\n战力量纲：{field}\n"
+                + ("避免复用上一批这些名字：" + "、".join(previous[:40]) if previous else "")
+            )},
+        ]
+        try:
+            _content, name, args = llm.call_tool(msgs, _category_tool(key), temperature=0.9, max_tokens=4096)
+            if name == "generate_character_pool" and isinstance(args, dict):
+                return _normalize_pool({key: args.get(key)})[key][:count]
+        except Exception:
+            pass
+        return []
+
+    # 三类互不依赖，可同时生成，减少开局等待。
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        jobs = {key: executor.submit(generate_category, key, count) for key, count in POOL_TARGET_COUNTS.items()}
+        for key, job in jobs.items():
+            pool[key] = job.result()
+    for key in POOL_TARGET_COUNTS:
+        pool["_meta"]["sources"][key] = "ai" if pool[key] else "local"
+    return prepare_pool(pool)
 
 
-def sample_hand(pool_items, n=9, locked=None):
-    """从候选池随机抽 n 个；locked 若存在则保留在结果里（其余仍随机）。"""
-    items = list(pool_items or [])
+def sample_hand(pool_items, n=HAND_SIZE, locked=None, previous=None):
+    """保留锁定项；优先换入至少3个上轮没有的候选，避免只换顺序。"""
+    items, seen = [], set()
+    for item in pool_items or []:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and name and name.casefold() not in seen:
+            items.append(item)
+            seen.add(name.casefold())
     if not items:
         return []
     locked_item = next((x for x in items if x.get("name") == locked), None) if locked else None
-    others = [x for x in items if x.get("name") != locked]
+    others = [x for x in items if x is not locked_item]
     n = max(1, min(n, len(items)))
+    hand = [locked_item] if locked_item is not None else []
+    previous_names = {x.get("name") if isinstance(x, dict) else str(x) for x in previous or []}
+    fresh = [x for x in others if x["name"] not in previous_names]
+    slots = n - len(hand)
+    if previous and fresh and slots:
+        hand += random.sample(fresh, min(3, len(fresh), slots))
+    picked = {x["name"] for x in hand}
+    remaining = [x for x in others if x["name"] not in picked]
+    hand += random.sample(remaining, n - len(hand))
     if locked_item is not None:
-        rest = random.sample(others, min(n - 1, len(others)))
-        hand = [locked_item] + rest
+        rest = hand[1:]
+        random.shuffle(rest)
+        hand = hand[:1] + rest
     else:
-        hand = random.sample(items, n)
+        random.shuffle(hand)
     return hand
 
 
