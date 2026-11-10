@@ -1,10 +1,24 @@
 [theme]
-# 暖色浅色主题（与桌面版 gui.py 一致）：陶土橙 + 暖米色
-primaryColor = "#d67c4e"
-backgroundColor = "#f5efe6"
-secondaryBackgroundColor = "#f6ecdd"
-textColor = "#4a4136"
-font = "sans serif"
+# 古卷水墨：宣纸底、浓墨字、朱砂点睛（细节样式见 app.py 顶部 CSS）
+base = "light"
+primaryColor = "#a23a2c"
+backgroundColor = "#e8e1d0"
+secondaryBackgroundColor = "#f8f4ea"
+textColor = "#23211d"
+borderColor = "#d3ccbb"
+# 内置衬线体；中文会自动落到系统宋体（macOS 宋体-简 / Windows 宋体）
+font = "serif"
+headingFont = "serif"
+baseRadius = "3px"
+linkColor = "#a23a2c"
+
+[theme.sidebar]
+backgroundColor = "#e1dac8"
+secondaryBackgroundColor = "#e8e1d0"
+
+[client]
+# 隐藏右上角的 Deploy 按钮和开发菜单，页面更干净
+toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false

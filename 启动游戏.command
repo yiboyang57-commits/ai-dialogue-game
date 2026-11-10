@@ -13,6 +13,16 @@ if [ ! -d ".venv" ]; then
   }
 fi
 
+# 已有环境也需要支持新版聊天区的自动滚动。
+if ! .venv/bin/python -c 'import streamlit; from packaging.version import Version; assert Version("1.62") <= Version(streamlit.__version__) < Version("2")' 2>/dev/null; then
+  echo "正在更新网页运行环境…"
+  .venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt || {
+    echo "更新失败，请检查网络后重试。"
+    read -r -p "按回车退出…"
+    exit 1
+  }
+fi
+
 # 启动服务（后台）并打开浏览器
 .venv/bin/python -m streamlit run app.py --server.headless true --server.port 8501 --browser.gatherUsageStats false &
 SERVER_PID=$!

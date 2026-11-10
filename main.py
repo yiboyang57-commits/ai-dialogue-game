@@ -12,7 +12,7 @@
 import json
 import sys
 
-from config import BASE_URL, DEFAULT_MODEL, load_api_key, load_model, save_api_key
+from config import BASE_URL, DEFAULT_MODEL, SaveCorruptError, load_api_key, load_model, save_api_key
 from game import Game, load_game
 from llm_client import LLMClient, LLMError
 from memory import Memory
@@ -332,6 +332,9 @@ def loop(game):
                 continue
 
         # 数字选择：把「1/2/3…」映射到上一步给出的显而易见选项
+        if game.is_over:
+            print("这段人生已经结束。可用 /state 查看记录、/save 保存或 /quit 退出，再开始新游戏。")
+            continue
         opts = game.state.data.get("options") or []
         if opts and user.isdigit():
             idx = int(user) - 1
@@ -357,7 +360,14 @@ def main():
     model = load_model() or DEFAULT_MODEL
     llm = LLMClient(api_key=key, model=model, base_url=BASE_URL)
 
-    if WorldState.load() is not None:
+    try:
+        has_save = WorldState.load() is not None
+    except SaveCorruptError as e:
+        print(f"\n⚠ {e}")
+        print("   这份存档无法继续；开始新游戏后会被新存档覆盖。如需保留，请先手动备份 save/ 目录。")
+        has_save = False
+
+    if has_save:
         choice = input("\n检测到已有存档，是否继续上次游戏？[Y/n]：").strip().lower()
         if choice in ("", "y", "yes", "是"):
             game = continue_game(llm)

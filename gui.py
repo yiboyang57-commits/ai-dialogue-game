@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from config import BASE_URL, load_api_key, save_api_key, load_model
+from config import BASE_URL, SaveCorruptError, load_api_key, save_api_key, load_model
 from game import Game
 from llm_client import LLMClient
 from memory import Memory
@@ -173,6 +173,8 @@ def _affinity_label(info, turn):
 
 
 def _hp_band(d):
+    if d.get("player", {}).get("life_status") == "dead":
+        return "死亡"
     attrs = d.get("player", {}).get("attributes") or {}
     hp = attrs.get("hp")
     maxhp = attrs.get("max_hp") or 100
@@ -180,7 +182,7 @@ def _hp_band(d):
         return None
     ratio = hp / max(maxhp, 1)
     if ratio <= 0:
-        return "濒死"
+        return "死亡"
     if ratio < 0.25:
         return "重伤"
     if ratio < 0.6:
@@ -844,10 +846,14 @@ class GameApp:
             self._clear_options()
             self._start_dots()
         else:
-            self.entry.configure(state="normal")
-            self.send_btn.set_enabled(True)
+            ended = self.game is not None and self.game.is_over
+            self.entry.configure(state="disabled" if ended else "normal")
+            self.send_btn.set_enabled(not ended)
             self._stop_dots()
-            self.entry.focus_set()
+            if ended:
+                self.status_label.configure(text="这段人生已结束，可保存记录或开始新游戏。")
+            else:
+                self.entry.focus_set()
 
     def _start_dots(self):
         self._dots = 0
@@ -873,7 +879,7 @@ class GameApp:
 
     def _set_options(self, options):
         self._clear_options()
-        if not options:
+        if not options or (self.game is not None and self.game.is_over):
             return
         tk.Label(self.opts_frame, text="可选行动", bg=BG, fg=MUTED, font=FONT_LABEL).pack(
             side="top", anchor="w", padx=6, pady=(0, 6))
@@ -958,6 +964,8 @@ class GameApp:
         blocks.append(("状态\n", "p_head"))
         blocks.append(("　·　".join(status) + "\n", "p_body" if status else "p_muted"))
         blocks.append(("天赋：" + ("、".join(talents) if talents else "无") + "\n", "p_muted"))
+        for protection in self.game.state.protection_summary():
+            blocks.append(("保命能力：" + protection + "\n", "p_muted"))
         physique = player.get("physique") or {}
         gfs = player.get("golden_fingers") or []
         gf_names = [g.get("name") for g in gfs if isinstance(g, dict) and g.get("name")]
@@ -1010,13 +1018,19 @@ class GameApp:
     def _continue(self):
         if self.busy:
             return
-        if WorldState.load() is None:
+        try:
+            state = WorldState.load()
+        except SaveCorruptError as e:
+            messagebox.showerror("读档失败", str(e))
+            return
+        if state is None:
             messagebox.showinfo("提示", "没有找到存档。")
             return
-        self.game = Game(WorldState.load(), Memory.load(), self.llm)
+        self.game = Game(state, Memory.load(), self.llm)
         self._append_system("已读取存档。")
         self._refresh_panel()
         self._set_options(self.game.state.data.get("options") or [])
+        self._set_busy(False)
 
     def _on_opening(self, opening):
         self._set_busy(False)
@@ -1034,6 +1048,9 @@ class GameApp:
             return
         if self.game is None:
             messagebox.showinfo("提示", "请先「新游戏」或「继续上次」。")
+            return
+        if self.game.is_over:
+            self._append_system("这段人生已经结束。可保存记录或点击「新游戏」。")
             return
         self._append_player(text)
         self._clear_options()
