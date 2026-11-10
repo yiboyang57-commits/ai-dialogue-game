@@ -1308,6 +1308,45 @@ class StorageSQLiteTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_recall_finds_early_needles(self):
+        import json, os, random, tempfile, storage
+        from world_state import WorldState
+        random = random.Random(3)
+        names = ["陆青鸢", "赵执事", "阿蛮", "无名老叟", "周掌柜", "林舟"]
+        places = ["丹堂", "后山", "坊市", "外门执事堂", "断崖石室"]
+        needles = {
+            5:   ("陆青鸢", "陆青鸢压低声音：进藏经阁的暗号是青灯照壁。", "藏经阁的暗号", "青灯照壁"),
+            50:  ("周掌柜", "周掌柜立下字据：欠你三百二十七块灵石，秋后归还。", "周掌柜欠我多少灵石", "三百二十七"),
+            150: ("林舟", "林舟答应你：三日内替你寻回那枚碎裂的玄龟玉佩。", "林舟答应帮我找什么", "玄龟玉佩"),
+        }
+        db = storage.SaveDB(os.path.join(self.tmp.name, "needles.db"))
+        self.addCleanup(db.close)
+        st = WorldState()
+        for n in names:
+            st.data["characters"][n] = {"description": "x", "attitude_toward_player": "中立",
+                                        "affinity": 40, "location": random.choice(places)}
+        for t in range(1, 301):
+            before = json.loads(json.dumps(st.data))
+            st.data["meta"]["turn"] = t
+            st.data["location"] = {"name": random.choice(places), "description": ""}
+            if t in needles:
+                who, nar, _, _ = needles[t]
+                inp = f"和{who}说话"
+            else:
+                who = random.choice(names)
+                act = random.choice(["闲聊了几句近况", "一起吃了顿饭", "讨论了修炼心得",
+                                     "擦肩而过点头致意", "商量了坊市的行情"])
+                nar, inp = f"你与{who}{act}，没有什么特别的事发生。", f"找{who}"
+            db.record_turn(t, "action", nar, player_input=inp, update={}, state=st.data, state_before=before)
+        hits = 0
+        for t, (who, _nar, q, key) in needles.items():
+            for query in (q, f"问{who}：" + q, q[-4:]):
+                got = db.recall_for_turn(query, st.data, 301)
+                hits += any(key in x["text"] for x in got)
+        self.assertGreaterEqual(hits, 8)
+        for weird in ('他说"你好"', "A-B: 测试", "100% 确定", "（）、。"):
+            db.recall_for_turn(weird, st.data, 301)   # 不应抛异常
+
     def _state(self, hp=100, flags=None):
         st = world_state.WorldState()
         st.apply_template({"world": {"background": "存储测试"},
@@ -1366,6 +1405,46 @@ class StorageSQLiteTests(unittest.TestCase):
         finally:
             db.close()
 
+
+    def test_turn_summary_is_stored_and_searchable(self):
+        """每轮剧情概括入库，并优先作为检索片段（正文里没有关键词也能召回）。"""
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "正文里没有那个词，只有动作描写。",
+                           player_input="四处看看", summary="青灯照壁的暗号被刻在墙上")
+            row = db.list_turns(1)[0]
+            self.assertEqual(row["summary"], "青灯照壁的暗号被刻在墙上")
+            hits = db.recall("青灯照壁")["turns"]
+            self.assertTrue(hits)
+            self.assertIn("青灯照壁", hits[0]["excerpt"])
+        finally:
+            db.close()
+
+    def test_old_db_is_migrated_with_summary_and_fts(self):
+        """阶段 1 之前建的旧库（无 summary 列、FTS 两列）打开时自动升级。"""
+        import sqlite3
+        path = config.db_path_for("")
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "CREATE TABLE turns(id INTEGER PRIMARY KEY AUTOINCREMENT, turn_no INTEGER NOT NULL, "
+            "kind TEXT NOT NULL, player_input TEXT, narrative TEXT NOT NULL, location TEXT, "
+            "game_time TEXT, calendar_days INTEGER, created_at TEXT NOT NULL);"
+            "INSERT INTO turns(turn_no, kind, narrative, created_at) VALUES(1,'action','旧原文','x');"
+            "CREATE VIRTUAL TABLE turns_fts USING fts5(player_input, narrative, tokenize='trigram');"
+            "INSERT INTO turns_fts(rowid, player_input, narrative) VALUES(1,'','旧原文');")
+        conn.commit()
+        conn.close()
+        db = storage.SaveDB(path)
+        try:
+            cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(turns)").fetchall()}
+            self.assertIn("summary", cols)
+            fts_cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(turns_fts)").fetchall()}
+            self.assertIn("summary", fts_cols)
+            db.record_turn(2, "action", "新的一回合", summary="新的暗号：月照寒潭")
+            self.assertTrue(db.recall("月照寒潭")["turns"])
+        finally:
+            db.close()
+
     def test_game_dual_write_is_optional_and_safe(self):
         # 默认关闭：不产生 .db
         game = Game(world_state.WorldState(), memory.Memory(),
@@ -1375,17 +1454,152 @@ class StorageSQLiteTests(unittest.TestCase):
         # WANJIE_STORAGE=sqlite：每回合双写
         with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
             game = Game(world_state.WorldState(), memory.Memory(),
-                        Replies(("你好。", {"turn_event": "t"})), rules=[])
+                        Replies(("你好。", {"turn_event": "t", "turn_summary": "林舟打了个招呼"})), rules=[])
             game.run_turn("打个招呼")
         self.assertTrue(os.path.exists(config.db_path_for("")))
         db = storage.SaveDB(config.db_path_for(""))
         try:
             self.assertEqual(db.stats()["turns"], 1)
             self.assertEqual(db.list_turns()[0]["narrative"], "你好。")
+            self.assertEqual(db.list_turns()[0]["summary"], "林舟打了个招呼")
             rebuilt = db.load_state()
             self.assertEqual(rebuilt["meta"]["turn"], 1)  # 回合号等代码侧改动也要能还原
         finally:
             db.close()
+
+
+    def test_facts_mentions_and_profile(self):
+        """路线图 §2.3：从前后状态对比生成实体、事实（旧事实封口）与提及。"""
+        before = self._state(hp=100)
+        before.data["location"] = {"name": "集市", "description": "热闹"}
+        before.data["characters"] = {"甲": {"description": "摊主", "attitude_toward_player": "中立",
+                                            "location": "集市", "status": "安好", "affinity": 40, "met_turn": 0}}
+        before.data["inventory"] = [{"name": "灵石", "quantity": 5}]
+        after = copy.deepcopy(before.data)
+        after["characters"]["甲"].update({"attitude_toward_player": "友善", "affinity": 55})
+        after["inventory"] = [{"name": "灵石", "quantity": 3}]
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "你和甲在集市聊了几句，甲收了灵石。",
+                           player_input="找甲买符", update={}, state=after, state_before=before.data)
+            profile = db.entity_profile("甲")
+            self.assertIsNotNone(profile)
+            current = {f["attribute"]: f["value"] for f in profile["facts"] if f["valid_to_turn"] is None}
+            self.assertEqual(current["态度"], "友善")
+            self.assertEqual(current["所在"], "集市")
+            attitudes = [f for f in profile["facts"] if f["attribute"] == "态度"]
+            self.assertEqual(len(attitudes), 2)  # 旧「中立」被封口 + 新「友善」
+            self.assertTrue(any(f["valid_to_turn"] is not None for f in attitudes))
+            self.assertEqual(current["持有"] if "持有" in current else None, None)  # 持有在物品实体上
+            item = db.entity_profile("灵石")
+            self.assertEqual({f["attribute"]: f["value"] for f in item["facts"]
+                              if f["valid_to_turn"] is None}["持有"], "3")
+            self.assertTrue(profile["recent_turns"])
+            self.assertEqual(profile["recent_turns"][0]["role"], "present")
+        finally:
+            db.close()
+
+    def test_recall_exact_and_fallback(self):
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "老槐树下埋着一只旧木匣。", player_input="去老槐树看看")
+            db.record_turn(2, "action", "师妹在旁边轻声提醒你小心。", player_input="问师妹")
+            # 3 字以上走 FTS trigram；1~2 字回退 LIKE
+            self.assertTrue(db.recall("老槐树")["turns"])
+            self.assertTrue(db.recall("师妹")["turns"])
+            self.assertFalse(db.recall("不存在的词组")["turns"])
+            self.assertIsNone(db.recall(entity="不存在的人")["entity"])
+        finally:
+            db.close()
+
+    def test_migration_seeds_entities(self):
+        st = self._state(hp=80)
+        st.data["location"] = {"name": "村口", "description": "土路"}
+        st.data["characters"] = {"老王": {"description": "猎户", "attitude_toward_player": "友善", "affinity": 55}}
+        st.data["inventory"] = [{"name": "灵石", "quantity": 2}]
+        st.save()
+        db_path, _ = storage.migrate_from_json("")
+        db = storage.SaveDB(db_path)
+        try:
+            self.assertIsNotNone(db.entity_profile("老王"))
+            self.assertIsNotNone(db.entity_profile("灵石"))
+            self.assertIsNotNone(db.entity_profile("村口"))
+        finally:
+            db.close()
+
+
+    def test_recall_for_turn_ranks_excludes_and_limits(self):
+        """路线图 §2.5：每轮召回排除最近几轮、按分数排序、限制条数。"""
+        before = self._state()
+        after1 = copy.deepcopy(before.data)
+        after1["location"] = {"name": "集市", "description": "热闹"}
+        after1["characters"] = {"老王": {"description": "掌柜", "attitude_toward_player": "中立",
+                                        "location": "集市", "affinity": 40, "met_turn": 0}}
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "你在集市遇见老王，他收下了你的灵石。",
+                           player_input="去集市找老王",
+                           update={"relationship_events": [{"subject": "老王", "event": "赠礼"}],
+                                   "characters": {"老王": {"description": "掌柜"}}},
+                           state=after1, state_before=before.data)
+            db.record_turn(2, "action", "雨下了一整夜，无事发生。", player_input="睡觉", update={}, state=after1,
+                           state_before=after1)
+            hits = db.recall_for_turn("再去找老王问问", after1, current_turn=6)
+            self.assertTrue(hits)
+            self.assertFalse(any("描述：" in str(h["text"]) for h in hits))  # 空值事实不进召回
+            self.assertIn("老王", str(hits[0]["text"]))
+            self.assertLessEqual(len(db.recall_for_turn("老王", after1, current_turn=6, limit=1)), 1)
+            # current_turn=3 时，最近 3 轮（第 1、2 轮）都被排除
+            self.assertEqual(db.recall_for_turn("老王", after1, current_turn=3), [])
+            for item in hits:
+                self.assertTrue({"turn_no", "text", "score"} <= set(item))
+        finally:
+            db.close()
+
+    def test_turn_messages_place_recalled_before_recent(self):
+        state = world_state.WorldState()
+        state.apply_template({"world": {"background": "测试"}})
+        mem = memory.Memory()
+        mem.recent = [{"role": "user", "content": "最近一句玩家话"},
+                      {"role": "assistant", "content": "最近一句主持话"}]
+        msg = prompts.build_turn_messages(state, mem, "现在行动",
+                                          recalled=[{"turn_no": 3, "text": "很久以前的暗号：青灯照壁"}])
+        content = msg[0]["content"]
+        self.assertLess(content.index("【当前世界状态摘要】"), content.index("【相关往事"))
+        self.assertLess(content.index("【相关往事"), content.index("【最近几轮对话】"))
+        self.assertIn("[第 3 回]", content)
+        self.assertIn("青灯照壁", content)
+        # 没有召回时不出现该段落
+        plain = prompts.build_turn_messages(state, mem, "现在行动")[0]["content"]
+        self.assertNotIn("【相关往事", plain)
+        # 长度预算
+        block = prompts.build_recall_block([{"turn_no": i, "text": "很长的往事" * 40} for i in range(30)])
+        self.assertLessEqual(len(block), prompts.RECALL_MAX_CHARS)
+
+    def test_game_uses_recall_when_sqlite_enabled(self):
+        before = self._state()
+        after1 = copy.deepcopy(before.data)
+        after1["location"] = {"name": "集市", "description": ""}
+        after1["characters"] = {"老王": {"description": "掌柜", "attitude_toward_player": "友善",
+                                        "location": "集市", "affinity": 55, "met_turn": 0}}
+        db = storage.SaveDB(config.db_path_for(""))
+        try:
+            db.record_turn(1, "action", "你在集市遇见老王。", player_input="去集市",
+                           update={}, state=after1, state_before=before.data)
+        finally:
+            db.close()
+        st = world_state.WorldState(copy.deepcopy(after1))
+        st.data["meta"]["turn"] = 6  # 让第 1 轮落在「最近 3 轮」之外
+        game = Game(st, memory.Memory(), object(), rules=[])
+        with patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            content = game._turn_messages("再去找老王问问")[0]["content"]
+        self.assertIn("【相关往事", content)
+        self.assertIn("老王", content)
+        # 关闭存储时不召回
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WANJIE_STORAGE", None)
+            plain = game._turn_messages("再去找老王问问")[0]["content"]
+        self.assertNotIn("【相关往事", plain)
 
 
 if __name__ == "__main__":

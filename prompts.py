@@ -17,6 +17,7 @@ SYSTEM_PROMPT = """你是一个文字冒险游戏的主持人（Game Master）�
 【每轮输出要求——非常重要】
 1. 先输出给玩家看的叙事文本。叙事语气、文风与节奏要与世界观一致（见【叙事风格】），不要套用固定的篇幅或句式，长短随剧情张弛；不要复述玩家原话，直接推进剧情。叙事不要加“主持人：”之类的前缀。
 2. 然后必须调用工具 update_world_state 来结构化更新世界状态。本轮发生的变化——包括玩家危险或不可行行为带来的后果——都要如实写进工具参数里；不要把状态变化只写在叙事文本里。
+3. 同时在 turn_summary 里用一两句话概括本轮发生了什么（谁、在哪、做了什么、留下了什么承诺/冲突），供以后检索回忆；不写数值，不写没有发生的事。
 
 【每轮行动边界与时间——必须遵守】
 一轮只处理玩家这次明确提出的行动，以及它直接、不可避免的后果。完成后就停下，等待下一次输入。
@@ -159,8 +160,33 @@ def build_system_prompt(state, rules):
     return "\n\n".join(parts)
 
 
-def build_turn_messages(state, memory, latest_input):
-    """构建每轮的用户消息：状态摘要 + 最近几轮 + 最新输入。"""
+RECALL_MAX_CHARS = 1200   # 「相关往事」块的最大字符数（路线图建议 ≤1500 token）
+
+
+def build_recall_block(items, max_chars=RECALL_MAX_CHARS):
+    """把 storage.recall_for_turn 的结果排成提示词段落；超过预算就截断。"""
+    lines, used = [], 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        turn_no = item.get("turn_no")
+        line = ("- [第 %s 回] %s" % (turn_no, text)) if turn_no else "- " + text
+        if used + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
+def build_turn_messages(state, memory, latest_input, recalled=None):
+    """构建每轮的用户消息：状态摘要 + 相关往事 + 最近几轮 + 最新输入。
+
+    recalled：storage.recall_for_turn 返回的列表（可选）。放在最近几轮之前、
+    状态摘要之后，既补上「很久以前但相关」的事，又不打乱「最近几轮」的原始顺序。
+    """
     summary = state.to_summary()
 
     recent = memory.recent
@@ -171,11 +197,13 @@ def build_turn_messages(state, memory, latest_input):
     else:
         recent_block = "（无，游戏刚开始）"
 
-    user_content = (
-        "【当前世界状态摘要】\n" + summary + "\n\n"
-        "【最近几轮对话】\n" + recent_block + "\n\n"
-        "【玩家最新输入】\n" + latest_input
-    )
+    parts = ["【当前世界状态摘要】\n" + summary]
+    recall_block = build_recall_block(recalled or [])
+    if recall_block:
+        parts.append("【相关往事（系统按相关度检索，可能有用，不一定全部相关）】\n" + recall_block)
+    parts.append("【最近几轮对话】\n" + recent_block)
+    parts.append("【玩家最新输入】\n" + latest_input)
+    user_content = "\n\n".join(parts)
     return [{"role": "user", "content": user_content}]
 
 

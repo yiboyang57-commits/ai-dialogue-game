@@ -216,6 +216,10 @@ UPDATE_TOOL = {
                     "type": "string",
                     "description": "用一句话记录本轮关键事件，用于状态摘要。",
                 },
+                "turn_summary": {
+                    "type": "string",
+                    "description": "用一两句话概括本轮发生了什么（人物、地点、关键动作/承诺/冲突），供以后检索回忆；不写数值，不写未发生的事。",
+                },
                 "time_block": {
                     "type": "object",
                     "description": (

@@ -2,6 +2,7 @@
 import copy
 import json
 import math
+import os
 import random
 import combat as combat_module
 import dynamics as dynamics_module
@@ -80,11 +81,32 @@ class Game:
         self.system_prompt = build_system_prompt(self.state, self.rules)
 
     # ---- 每轮核心流程 ----
+    def _recalled_memories(self, player_input):
+        """SQLite 开启时检索「相关往事」；关闭/出错一律返回 None，不影响正常流程。"""
+        if not storage.enabled():
+            return None
+        try:
+            path = db_path_for(self.state.save_key)
+            if not os.path.exists(path):
+                return None
+            with storage.SaveDB(path) as db:
+                return db.recall_for_turn(
+                    player_input,
+                    self.state.data,
+                    self.state.data.get("meta", {}).get("turn", 0),
+                )
+        except Exception:
+            return None
+
+    def _turn_messages(self, player_input):
+        return build_turn_messages(self.state, self.memory, player_input,
+                                   recalled=self._recalled_memories(player_input))
+
     def _generate(self, player_input):
         """只把 [状态摘要 + 最近几轮 + 最新输入] 发给模型，拿到 (叙事, 状态增量)。"""
         self._refresh_system_prompt()
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages += build_turn_messages(self.state, self.memory, player_input)
+        messages += self._turn_messages(player_input)
         return self._call_world_update(messages)
 
     def _call_world_update(self, messages):
@@ -136,6 +158,7 @@ class Game:
             self._last_roll = None
             return
         kind = "block" if block_days else ("opening" if player_input is None else "action")
+        summary = update.get("turn_summary") if isinstance(update, dict) else None
         try:
             storage.append_turn(
                 db_path_for(self.state.save_key),
@@ -146,11 +169,14 @@ class Game:
                 update=update,
                 state=self.state.data,
                 roll=self._last_roll,
+                state_before=getattr(self, "_state_before", None),
+                summary=summary,
             )
         except Exception:
             pass  # 审计/历史层失败不能影响游戏本身
         finally:
             self._last_roll = None
+            self._state_before = None
 
     def _maybe_compress(self):
         """P2-16：压缩失败静默重试会导致缓冲无限增长、且每轮多一次昂贵调用。
@@ -594,7 +620,7 @@ class Game:
         """根据系统判定结果，让模型叙述结果并记录后续状态。"""
         self._refresh_system_prompt()
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages += build_turn_messages(self.state, self.memory, player_input)
+        messages += self._turn_messages(player_input)
         messages += [
             {"role": "user", "content": (
                 "【系统判定结果（由系统决定，请严格遵守，不得改写结局）】\n" + brief + "\n\n"
@@ -673,7 +699,7 @@ class Game:
     def _generate_block_narrative(self, brief, player_input, draft):
         self._refresh_system_prompt()
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages += build_turn_messages(self.state, self.memory, player_input)
+        messages += self._turn_messages(player_input)
         messages.append({"role": "user", "content": brief + (
             "\n\n【未向玩家发布的草稿，仅供参考，若与上面的结算矛盾以结算为准】\n" + draft if draft else "")})
         text, update = self._call_world_update(messages)
@@ -719,6 +745,7 @@ class Game:
 
     def _play_turn(self, player_input, add_user, block=None):
         state_before = copy.deepcopy(self.state.data)
+        self._state_before = state_before  # 供 SQLite 实体/事实层对比本回合变化
         memory_before = copy.deepcopy(self.memory.to_dict())
         try:
             if block:
