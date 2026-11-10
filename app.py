@@ -6,6 +6,7 @@
 """
 import html
 import random
+import secrets
 import re
 
 import streamlit as st
@@ -26,6 +27,7 @@ import world_gen
 # ---------------------------------------------------------------- 主题与全局样式
 # 古卷水墨 · 册页版：宣纸、浓墨、朱砂印，正文区是一页线装书（样式全部在下面这段 CSS 里）
 VERSION = "v2.24"  # 界面版本号：用于确认云端是否已部署最新代码（顶栏可见）
+TEMP_SLOT_BYTES = 12  # 临时槽使用 96 位随机标识
 CHAT_HEIGHT = 500  # 提供滚动容器，实际高度由响应式样式调整
 
 st.set_page_config(page_title="万界 · 文字冒险", page_icon="🗡️", layout="wide",
@@ -667,7 +669,7 @@ def random_think():
 def _set_slot_query(slot):
     """把当前槽名写进地址栏（?slot=…），刷新页面后能靠它找回这一局（P1-12）。"""
     try:
-        if slot:
+        if isinstance(slot, str) and re.fullmatch(r"临时-[A-Za-z0-9_-]+", slot):
             st.query_params["slot"] = slot
         else:
             st.query_params.pop("slot", None)
@@ -676,12 +678,15 @@ def _set_slot_query(slot):
 
 
 def _slot_from_query():
-    """地址栏里的存档槽名；没有就返回 None。"""
+    """地址栏只接受临时槽；命名存档必须从继续存档列表读取。"""
     try:
         slot = st.query_params.get("slot")
     except Exception:
         return None
-    return slot.strip() if isinstance(slot, str) and slot.strip() else None
+    if isinstance(slot, str) and re.fullmatch(r"临时-[A-Za-z0-9_-]+", slot.strip()):
+        return slot.strip()
+    _set_slot_query(None)
+    return None
 
 
 def session_slot():
@@ -691,7 +696,7 @@ def session_slot():
     """
     if "session_slot" not in st.session_state:
         slot = _slot_from_query()
-        st.session_state.session_slot = slot or ("临时-" + str(random.randint(100000, 999999)))
+        st.session_state.session_slot = slot or ("临时-" + secrets.token_urlsafe(TEMP_SLOT_BYTES))
     _set_slot_query(st.session_state.session_slot)
     return st.session_state.session_slot
 
@@ -753,7 +758,7 @@ def _save_to_named_slot(name):
     game.memory.save_key = key
     game.save()
     st.session_state.current_slot = key
-    _set_slot_query(key)  # 保存成命名存档后，刷新页面直接回到这个存档
+    _set_slot_query(None)  # 命名存档刷新后从继续存档列表读取
     return True
 
 
@@ -773,7 +778,7 @@ def _load_named_slot(key):
     st.session_state.log = _restored_log(state, memory)  # P2-18：接上最近几轮原文
     st.session_state.current_slot = key
     st.session_state.character_step = False
-    _set_slot_query(key)
+    _set_slot_query(None)
     st.rerun()
 
 

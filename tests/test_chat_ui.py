@@ -209,6 +209,45 @@ class SlotRestoreUITests(unittest.TestCase):
         return app
 
     @patch('config.list_save_slots', return_value=[])
+    def test_query_cannot_restore_named_slot(self, _slots):
+        self._write_slot('111', turn=23)
+        app = self._app()
+        fake = _FakeQueryParams(slot='111')
+        with patch.object(st, 'query_params', fake):
+            app.run()
+        self.assertFalse(app.exception)
+        self.assertNotIn('game', app.session_state)
+        self.assertNotIn('slot', fake)
+        self.assertEqual(WorldState.load('111').data['meta']['turn'], 23)
+
+    def test_new_temp_slot_uses_random_token_and_is_reused(self):
+        # 只装载实际地址栏流程函数，避免导入 app 时执行整页或读真实存档。
+        import ast
+        import re
+        import secrets
+        from types import SimpleNamespace
+        source = Path(__file__).resolve().parents[1].joinpath('app.py').read_text()
+        tree = ast.parse(source)
+        selected = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name in {'_slot_from_query', '_set_slot_query', 'session_slot'}]
+        class Session(dict):
+            def __getattr__(self, name):
+                return self[name]
+            def __setattr__(self, name, value):
+                self[name] = value
+        fake = SimpleNamespace(session_state=Session(), query_params={})
+        scope = {'st': fake, 're': re, 'secrets': secrets, 'TEMP_SLOT_BYTES': 12}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), 'app.py', 'exec'), scope)
+        with patch.object(secrets, 'token_urlsafe', wraps=secrets.token_urlsafe) as token:
+            slot = scope['session_slot']()
+            self.assertEqual(scope['session_slot'](), slot)
+            token.assert_called_once_with(12)
+        self.assertRegex(slot, r'^临时-[A-Za-z0-9_-]{16}$')
+        self.assertEqual(fake.query_params['slot'], slot)
+        scope['_set_slot_query']('111')
+        self.assertNotIn('slot', fake.query_params)
+
+    @patch('config.list_save_slots', return_value=[])
     def test_refresh_restores_game_from_query_slot(self, _slots):
         self._write_slot('临时-424242', turn=3)
         app = self._app()
@@ -284,9 +323,11 @@ class SlotRestoreUITests(unittest.TestCase):
         """P2-18：从「继续存档」读命名档时同样接上最近几轮。"""
         self._write_slot('命名档', turn=2, recent=[("user", "上次我去了集市")])
         app = self._app()
-        with patch.object(st, 'query_params', _FakeQueryParams()):
+        fake = _FakeQueryParams()
+        with patch.object(st, 'query_params', fake):
             app.run()
             next(b for b in app.button if b.label == '命名档').click().run()
+        self.assertNotIn('slot', fake)
         self.assertFalse(app.exception)
         self.assertIn("上次我去了集市", "\n".join(self._messages(app)))
 
