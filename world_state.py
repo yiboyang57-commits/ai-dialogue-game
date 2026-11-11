@@ -588,7 +588,7 @@ def _character_brief(name, info, legacy=False):
     if legacy:
         memories = [m for m in info.get("memories", []) if isinstance(m, str)]
         if memories:
-            line += "\n  往事：" + "；".join(memories[-3:])
+            line += "\n  往事：" + "；".join(format_character_memory(m) for m in memories[-3:])
     return line
 
 
@@ -618,7 +618,7 @@ def character_card(name, info, data):
         ("目标", "  目标：", str(profile.get("goal") or "")),
         ("情绪", "  情绪：", str(profile.get("mood") or "")),
         ("未了", "  未了：", "；".join(pending)),
-        ("往事", "  往事：", "；".join(m for m in info.get("memories", [])[-3:] if isinstance(m, str))),
+        ("往事", "  往事：", "；".join(format_character_memory(m) for m in info.get("memories", [])[-3:] if isinstance(m, str))),
     ]
     entries = [list(e) for e in entries if e[2]]
     def render():
@@ -772,11 +772,17 @@ def _sanitize_character(info, trusted=False):
 MAX_CHARACTER_MEMORIES = 8   # 每个角色最多保留的往事条数（摘要里只带最近 3 条）
 
 
-def _add_memory(char, memory):
+def format_character_memory(memory):
+    return "他的说法（未证实）：" + memory[len("【其说法】"):] if memory.startswith("【其说法】") else memory
+
+
+def _add_memory(char, memory, memory_kind="event"):
     """给角色追加一条“与玩家的往事”，去重并滚动保留最近 MAX_CHARACTER_MEMORIES 条。"""
     if not isinstance(memory, str) or not memory.strip():
         return
     memory = memory.strip()[:80]
+    if memory_kind == "claim":
+        memory = "【其说法】" + memory
     memories = [m for m in (char.get("memories") or []) if isinstance(m, str)]
     if memory in memories:
         return
@@ -924,7 +930,7 @@ def apply_update(state, update, power_cap=None):
             else:
                 target = d["characters"][name] = clean
             _ensure_affinity(target, turn)
-            _add_memory(target, memory)
+            _add_memory(target, memory, info.get("memory_kind", "event") if isinstance(info, dict) else "event")
             d["characters"][name] = d["characters"].pop(name)  # 最近互动的角色排到最后，摘要优先展示
 
     _apply_character_development(d, update.get("character_development"), turn + 1)

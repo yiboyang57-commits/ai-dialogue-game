@@ -75,6 +75,7 @@ UPDATE_TOOL = {
                             "aliases": {"type": "array", "maxItems": 3,
                                         "items": {"type": "string", "maxLength": 8},
                                         "description": "角色的其他称呼，最多三个；缺省保留已有称呼。"},
+                            "memory_kind": {"type": "string", "enum": ["event", "claim"], "description": "已发生的事实用event；人物未经证实的说法用claim。"},
                             "memory": {"type": "string", "description": "本轮该角色会记住的一件与玩家有关的事（一句话，站在该角色角度），系统会追加到其往事里；没有就省略。"},
                         },
                     },

@@ -2040,6 +2040,16 @@ class CharacterProfileTests(GameFixture):
             self.assertTrue(any(f["value"] == "open" and f["valid_to_turn"] is not None for f in facts))
             self.assertTrue(any(f["value"] == "kept" and f["valid_to_turn"] is None for f in facts))
 
+    def test_claim_memory_remains_unverified_in_cards_and_legacy(self):
+        st = world_state.WorldState()
+        world_state.apply_update(st, {"characters":{"甲":{"description":"路人", "memory":"玉佩不是我拿的", "memory_kind":"claim"},
+                                                          "乙":{"description":"掌柜", "memory":"归还了药材"}}})
+        self.assertEqual(st.data["characters"]["甲"]["memories"], ["【其说法】玉佩不是我拿的"])
+        self.assertIn("他的说法（未证实）：玉佩不是我拿的", st.to_summary())
+        self.assertEqual(st.data["characters"]["乙"]["memories"], ["归还了药材"])
+        st.data["characters"]["甲"]["profile"] = {"personality":"谨慎", "speech":"简短", "sample_lines":["请进", "稍等"]}
+        self.assertIn("未证实", st.to_summary("甲"))
+
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics
         st = world_state.WorldState()
