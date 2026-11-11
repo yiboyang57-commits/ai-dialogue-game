@@ -219,6 +219,29 @@ class SlotRestoreUITests(unittest.TestCase):
         return app
 
     @patch('config.list_save_slots', return_value=[])
+    def test_world_generation_preserves_selected_prose(self, _slots):
+        app = self._app()
+        app.run()
+        self.assertEqual(app.segmented_control(key='manual_prose').value, '朴素')
+        next(r for r in app.radio if r.label == '世界观来源').set_value('AI 生成').run()
+        app.segmented_control(key='generated_prose').set_value('文学').run()
+        import world_gen
+        template = world_gen.normalize_template({'world':{'background':'测试世界','prose':'朴素'}})
+        with patch('world_gen.generate_world', return_value=template):
+            next(b for b in app.button if b.label == '生成世界观').click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state['preview']['world']['prose'], '文学')
+        app = self._app()
+        app.run()
+        app.segmented_control(key='manual_prose').set_value('标准').run()
+        next(t for t in app.text_area if t.label == '世界观 / 背景').set_value('普通小镇').run()
+        import character_builder
+        with patch('character_builder.generate_pool', return_value=character_builder.prepare_pool({})):
+            next(b for b in app.button if b.label == '开始游戏').click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state['template']['world']['prose'], '标准')
+
+    @patch('config.list_save_slots', return_value=[])
     def test_query_cannot_restore_named_slot(self, _slots):
         self._write_slot('111', turn=23)
         app = self._app()

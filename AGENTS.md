@@ -7,6 +7,20 @@
 
 ---
 
+### v2.25 当前约定（2026-11-11）
+
+- 全量基线 **178 项**；任务书 `角色档案_任务书.md`，真实评测状态见 `docs/style_eval.md`、`docs/voice_eval.md`。自动测试不调用真实 API。
+- `world.prose` 默认朴素；`config.PROSE_LEVELS` 三档。`prompts` 动态拼接语言节，世界风格不能覆盖朴素档的表达要求。
+- 角色 `trait` 首次写入后冻结，`appearances` 由 `_commit` 按文本/状态变化计数。普通工具不能直写完整 `profile`、计数或修订，只能更新已有档案的 `goal/mood`。
+- `character_development` 是冻结后的修改入口；理由至少 8 字、默认冷却 30 回合，一人同轮最多一条；清空例句、排队只刷新例句。常量在 `world_state.py`。
+- `game._maybe_build_profiles` 在回合首次存盘后、SQLite 记录前运行，每回合最多处理一个角色；假 LLM 无 `call_tool` 直接跳过。失败不回滚剧情，最多三次；新档案再存 JSON，随后同一回合写库保持回放一致。总档案上限 20。
+- 模板角色用系统标记 `template_character` 区分，首次叙事出场才排队；旧存档缺字段仍按路人处理。
+- `WorldState.to_summary(player_input="", last_narrative="")` 支持相关人物卡：地点、输入点名/别名、上一段叙事，最多四张；有档案卡片限 180 字，其他最多八人。`to_player_summary` 不暴露档案。
+- `promises` 先写 JSON；编号使用 `meta.next_promise_id`，最多 20 条 open / 20 条已了结。草稿白名单不接受约定和人物转变，`merge_updates` 支持这些列表。期限基于日历，逾期不自动失约。
+- 玩家守约 +8 / 失约 −12，与本轮关系事件共用 ±30 上限；NPC 约定不自动加减好感。SQLite 以 `kind=promise` 同步内容与状态。
+- 往事 `memory_kind=claim` 存 `【其说法】` 前缀，摘要显示“他的说法（未证实）”；完整的角色知识隔离尚未实现。
+- 评测入口 `scripts/style_report.py` 只读，`scripts/style_ab.py`、`scripts/voice_blind_test.py` 仅由作者手动付费执行；不把模拟测试结果写成真实效果。
+
 ### v2.24 复审后的当前约定（2026-11-10）
 
 - R1–R8 已落实；全量 158 项，评测见 `docs/memory_eval.md`。JSON 主存储、SQLite 默认关闭不变。
@@ -56,7 +70,7 @@
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 ```
 
-上面这条是**唯一可靠的全量测试命令**。基线：**158 passed, OK**（约 1~5s）。
+上面这条是**唯一可靠的全量测试命令**。基线：**178 passed, OK**（约 1~5s）。
 改完代码**必须**跑它。
 
 ### ⚠️ 三个被验证过的测试陷阱（不要浪费时间去试）
@@ -130,25 +144,25 @@
 
 | 文件 | 行数 | 职责 |
 |------|-----:|------|
-| `game.py` | 806 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
-| `world_state.py` | 849 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
-| `app.py` | 1463 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
+| `game.py` | 938 | **编排核心**：每轮流程、战斗/判定两段式、压缩、失败回滚 |
+| `world_state.py` | 1115 | 状态 JSON 读写、`to_summary()`(给模型)、`to_player_summary()`(去数据化给玩家)、`apply_update` |
+| `app.py` | 1469 | Streamlit 网页版（**唯一使用 v2 候选池 + 岁月模式界面**） |
 | `gui.py` | 1153 | tkinter 图形版（**使用 legacy 固定目录**） |
 | `character_builder.py` | 587 | 天赋/体质/金手指：legacy 目录 + v2 随机候选池（两套 API 并存） |
-| `world_gen.py` | 485 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
+| `world_gen.py` | 487 | AI 生成 / 文件上传 / 手动输入 → 统一世界观模板 |
 | `main.py` | 385 | CLI 入口与菜单 |
 | `judgment.py` | 353 | 概率判定引擎（`logit = base + Σ因素 + 天赋 + 道具`, `p = sigmoid`） |
-| `prompts.py` | 249 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
-| `tools.py` | 247 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
+| `prompts.py` | 281 | 系统提示拼装 + 每轮消息 + 压缩提示（含【岁月模式】段） |
+| `tools.py` | 270 | `update_world_state` 完整 JSON Schema（含 `time_block` / `offscreen`） |
 | `combat.py` | 168 | 战斗/逃跑隐藏概率曲线 |
-| `config.py` | 185 | 路径、常量、存档槽、Key 读写 |
+| `config.py` | 189 | 路径、常量、存档槽、Key 读写 |
 | `llm_client.py` | 136 | urllib 直连 DeepSeek，tool calling 解析 |
 | `memory.py` | 89 | `recent`(最近3轮) + `buffer`(待压缩) |
-| `dynamics.py` | 80 | 好感度公式 + 关系/属性事件表 |
+| `dynamics.py` | 82 | 好感度公式 + 关系/属性事件表 |
 | `seasons.py` | 155 | **岁月模式**：按旬推进时间、掷小插曲/打断事件、回血与时长文案（纯函数 + 数据表） |
 | `save_bundle.py` | 57 | 网页版存档导出/导入 |
 | `gm_rules.py` / `gm_rules.json` | 51 | 主持人全局限制条件（与世界观解耦，可编辑） |
-| `storage.py` | 824 | **路线图阶段 1/2**：SQLite 事件层（turns/state_changes/rolls/snapshots）
+| `storage.py` | 835 | **路线图阶段 1/2**：SQLite 事件层（turns/state_changes/rolls/snapshots）
 + 实体/事实/提及（entities/aliases/mentions/facts）+ 检索（entity_profile / recall / recall_for_turn，FTS5→LIKE 兜底）|
 | `scripts/migrate_json_to_sqlite.py` | 52 | 把 JSON 存档迁移成 .db（`--slot` / `--all`） |
 | `world.example.json` | — | 世界观模板示例 |
@@ -386,7 +400,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 1. **保持"代码裁决、模型叙述"边界。** 不要让模型自己决定成败/伤害/生死。
    新增判定请走 `judgment`/`combat` 工具字段 + 代码结算。
-2. **改完必须跑全量测试**（§1 的命令），基线 158 passed。
+2. **改完必须跑全量测试**（§1 的命令），基线 178 passed。
    破坏 `tests/test_gameplay.py` 里的边界用例 = 架构退化。
 3. **HP / 死亡 / options / 战力 / 好感 / 生命上限是系统独占字段。**
    任何新路径都要像 `_protect_hp` 那样保证代码值最终胜出：模型写不进
@@ -521,7 +535,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 
 ## 9. 给 Agent 的工作流建议
 
-1. **先跑基线测试**（§1），确认 158 passed，再动手。
+1. **先跑基线测试**（§1），确认 178 passed，再动手。
 2. **定位改动点**：查 §7 的地图，别一上来就通读 6000 行。
    需要细节时按职责读单个文件，优先读 `game.py` + `world_state.py` + 目标文件。
 3. **改代码 → 跑测试 → 破坏边界用例就回退。**
@@ -536,7 +550,7 @@ flee_logit = (玩家战力 - 敌人战力 + flee_bonus×realm_gap) / sigma + mod
 ## 10. 快速参考卡片
 
 ```bash
-# 全量测试（唯一可靠命令，158 passed）
+# 全量测试（唯一可靠命令，178 passed）
 .venv/bin/python -m unittest tests.test_gameplay tests.test_character_pool tests.test_character_pool_ui tests.test_chat_ui
 
 # 启动

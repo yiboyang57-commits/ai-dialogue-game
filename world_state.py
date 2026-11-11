@@ -576,13 +576,20 @@ def character_mentioned(name, info, text):
     return any(n and n in str(text or "") for n in [name] + aliases if isinstance(n, str))
 
 
-def _character_brief(name, info, legacy=False):
+def _affinity_label(info, turn=0):
+    value = effective_affinity(info, turn)
+    return "高" if value >= 70 else "中" if value >= 40 else "低" if value >= 15 else "陌生"
+
+
+def _character_brief(name, info, legacy=False, turn=0):
     line = "- " + name
     if info.get("description"):
         line += "（" + str(info["description"]) + "）"
     for field, label in (("attitude_toward_player", "对你"), ("location", "在"), ("status", "状态")):
         if info.get(field):
             line += "｜" + label + "：" + str(info[field])
+    if isinstance(info.get("affinity"), (int, float)):
+        line += "｜好感=" + _affinity_label(info, turn)
     if info.get("trait"):
         line += "｜特点：" + str(info["trait"])
     if legacy:
@@ -596,7 +603,7 @@ def character_card(name, info, data):
     """完整卡片有严格预算；先舍弃往事、在意、目标，再压缩其余值，保留说话和例句标签。"""
     profile = info.get("profile")
     if not isinstance(profile, dict):
-        return _character_brief(name, info, legacy=True)
+        return _character_brief(name, info, legacy=True, turn=(data.get("meta") or {}).get("turn", 0))[:CARD_MAX_CHARS]
     samples = [s for s in profile.get("sample_lines", []) if isinstance(s, str)]
     promises = [p for p in data.get("promises", []) if isinstance(p, dict)
                 and p.get("status") == "open" and name in (p.get("from"), p.get("to"))]
@@ -609,7 +616,7 @@ def character_card(name, info, data):
         pending.append(str(p.get("content", "")) + f"（第{p.get('made_turn', 0)}回，已过{age}天{timing}）")
     entries = [
         ("身份", "- ", name + "（" + str(profile.get("identity") or info.get("description") or "") + "）"),
-        ("态度", "  对你：", str(info.get("attitude_toward_player") or "未知") + "｜在" + str(info.get("location") or "未知")),
+        ("态度", "  对你：", str(info.get("attitude_toward_player") or "未知") + "，好感=" + _affinity_label(info, (data.get("meta") or {}).get("turn", 0)) + "｜在" + str(info.get("location") or "未知")),
         ("性格", "  性格：", str(profile.get("personality") or "")),
         ("底线", "  底线：", str(profile.get("bottom_line") or "")),
         ("说话", "  说话：", str(profile.get("speech") or "")),
@@ -657,7 +664,7 @@ def character_context_lines(data, player_input="", last_narrative=""):
         lines.append("【其他人物】")
         legacy = not any(isinstance(c.get("profile"), dict) for _,c in chars)
         for n,c in remaining[:MAX_OTHER_CHARACTERS]:
-            lines.append(_character_brief(n,c,legacy=legacy))
+            lines.append(_character_brief(n,c,legacy=legacy,turn=(data.get("meta") or {}).get("turn", 0)))
         if len(remaining) > MAX_OTHER_CHARACTERS:
             lines.append("  …（其余角色略）")
     return lines

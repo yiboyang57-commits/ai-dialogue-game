@@ -1,4 +1,3 @@
-from config import PROSE_LEVELS, DEFAULT_PROSE
 """世界观设定：AI 自定义生成 + 文件上传，统一归一化为“世界观模板”。
 
 模板结构（与 world_state 中的状态字段一一对应）：
@@ -15,6 +14,7 @@ from config import PROSE_LEVELS, DEFAULT_PROSE
   "combat": {"field", "player_power", "realm_gap", "curve"}
 }
 """
+from config import PROSE_LEVELS, DEFAULT_PROSE
 import json
 import os
 

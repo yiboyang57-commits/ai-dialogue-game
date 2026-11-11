@@ -2050,6 +2050,81 @@ class CharacterProfileTests(GameFixture):
         st.data["characters"]["甲"]["profile"] = {"personality":"谨慎", "speech":"简短", "sample_lines":["请进", "稍等"]}
         self.assertIn("未证实", st.to_summary("甲"))
 
+    def test_manual_evaluation_scripts_are_isolated_and_require_key(self):
+        from scripts import style_ab, voice_blind_test
+        import io
+        from contextlib import redirect_stderr
+        fixture = json.loads(Path(__file__).parent.joinpath("fixtures/style_script.json").read_text())
+        self.assertEqual(len(fixture["inputs"]), 20)
+        previous = (config.SAVE_DIR, memory.SAVE_DIR, world_state.SAVE_DIR)
+        llm = Replies(*[("「你好。」", {})]*4)
+        result = style_ab.run_ab({"inputs":["你好", "再见"], "template":{}},llm,Path(self.tmp.name,"ab"))
+        self.assertTrue(result["comparable"])
+        self.assertEqual((config.SAVE_DIR, memory.SAVE_DIR, world_state.SAVE_DIR), previous)
+        self.assertIn("【语言——朴素直白】", llm.messages[-1][0]["content"])
+        self.assertNotIn("【语言——朴素直白】", llm.messages[0][0]["content"])
+        with patch.object(config,"load_api_key",return_value=None), patch.object(style_ab,"LLMClient") as client, redirect_stderr(io.StringIO()):
+            self.assertEqual(style_ab.main(["--script", "不存在的剧本.json"]),1)
+            client.assert_not_called()
+        with self.assertRaises(ValueError):
+            voice_blind_test.anonymous_cards(world_state.WorldState())
+
+    def test_voice_blind_test_removes_names_and_shuffles_choices(self):
+        from scripts.voice_blind_test import run_blind
+        st = world_state.WorldState()
+        for name in ("陆青鸢", "周掌柜", "林舟", "赵执事"):
+            st.data["characters"][name] = {"profile":{"identity":name,"personality":"谨慎", "speech":"直接", "sample_lines":["请进。","坐吧。"]}}
+        class Judge:
+            def __init__(self):
+                self.calls = []
+            def summarize(self,messages):
+                return "陆青鸢：先把事情说清楚。"
+            def call_tool(self,messages,tool):
+                self.calls.append(messages)
+                return "", "guess_speaker", {"speaker":"人物1"}
+        llm = Judge()
+        result = run_blind(st,llm,Path(self.tmp.name,"blind"))
+        self.assertEqual(result["trials"],12)
+        self.assertEqual(result["accuracy"],0.25)
+        self.assertEqual(result["random_baseline"],0.25)
+        self.assertEqual(len(llm.calls),12)
+        for messages in llm.calls:
+            payload = json.loads(messages[1]["content"])
+            self.assertNotIn("expected", payload)
+            self.assertNotIn("陆青鸢", str(payload))
+            self.assertNotIn("人物", payload["line"])
+        self.assertTrue(Path(self.tmp.name,"blind/report.md").exists())
+
+    def test_profile_second_save_failure_keeps_committed_turn(self):
+        profile = {"personality":"谨慎", "speech":"直接", "sample_lines":["请进。", "坐吧。"]}
+        game = self.game(ProfileReplies(("甲来了。", {}), profiles=[profile]))
+        game.state.data["characters"] = {"甲":{"appearances":2}}
+        save = game.save
+        saves = []
+        def fail_profile_save():
+            saves.append(1)
+            if len(saves) == 2:
+                raise OSError("模拟补充档案保存失败")
+            save()
+        with patch.object(config,"SAVE_DIR",self.tmp.name), patch.object(game,"save",side_effect=fail_profile_save):
+            self.assertEqual(game.run_turn("甲"), "甲来了。")
+        stored = world_state.WorldState.load().data
+        self.assertEqual(stored["meta"]["turn"],1)
+        self.assertNotIn("profile",stored["characters"]["甲"])
+        self.assertEqual(stored["characters"]["甲"]["profile_attempts"],1)
+        self.assertEqual(memory.Memory.load().recent[-1]["content"], "甲来了。")
+
+    def test_promise_failure_exact_penalty_and_overdue_sort(self):
+        st = world_state.WorldState()
+        st.data["characters"] = {"甲":{"affinity":80}, "乙":{"affinity":40}}
+        world_state.apply_update(st,{"promises_add":[
+            {"from":"玩家","to":"甲","content":"稍后送药","due_days":10},
+            {"from":"乙","to":"玩家","content":"尽快还钱","due_days":1}]})
+        st.data["calendar"]["days"] = 3
+        self.assertEqual(world_state.open_promises(st.data)[0]["id"], "p2")
+        world_state.apply_update(st,{"promises_update":[{"id":"p1","status":"broken"}]})
+        self.assertEqual(st.data["characters"]["甲"]["affinity"],68)
+
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics
         st = world_state.WorldState()

@@ -20,6 +20,8 @@ from tools import apply_update
 from world_state import WorldState, safe_int
 
 
+PROFILE_APPEARANCES = 3
+PROFILE_MEMORY_THRESHOLD = 2
 MAX_PROFILED = 20
 MAX_PROFILE_ATTEMPTS = 3
 PROFILE_BACKGROUND_CHARS = 300
@@ -182,13 +184,12 @@ class Game:
     def _count_character_appearances(self, player_input, text, update):
         """只按本轮已提交文本和角色更新计数，每人每回合最多一次。"""
         source = str(player_input or "") + "\n" + str(text or "")
-        changes = update.get("characters") if isinstance(update, dict) else {}
-        changes = changes if isinstance(changes, dict) else {}
+        previous_chars = (getattr(self, "_state_before", None) or {}).get("characters", {})
         for name, char in self.state.data.get("characters", {}).items():
             if not isinstance(char, dict):
                 continue
             aliases = char.get("aliases") if isinstance(char.get("aliases"), list) else []
-            if name in changes or any(n and n in source for n in [name] + aliases if isinstance(n, str)):
+            if previous_chars.get(name) != char or any(n and n in source for n in [name] + aliases if isinstance(n, str)):
                 char["appearances"] = max(0, safe_int(char.get("appearances"), 0)) + 1
 
     def _mark_pending_profiles(self, narrative, update):
@@ -208,8 +209,8 @@ class Game:
                 continue
             if safe_int(char.get("profile_attempts"), 0) >= MAX_PROFILE_ATTEMPTS:
                 continue
-            if (safe_int(char.get("appearances"), 0) >= 3 or name in related
-                    or len(char.get("memories") or []) >= 2
+            if (safe_int(char.get("appearances"), 0) >= PROFILE_APPEARANCES or name in related
+                    or len(char.get("memories") or []) >= PROFILE_MEMORY_THRESHOLD
                     or (char.get("template_character") and state_module.character_mentioned(name, char, narrative))):
                 char["profile_pending"] = "build"
 
