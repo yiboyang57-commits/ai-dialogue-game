@@ -13,6 +13,11 @@ from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic,
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
 from judgment import death_protection_limits, ITEM_MODIFIERS, ATTRIBUTE_FACTOR_LINKS
 
+MAX_OPEN_PROMISES = 20
+MAX_CLOSED_PROMISES = 20
+PROMISE_CONTENT_CHARS = 60
+MAX_PROMISE_DAYS = 3600
+
 MAX_CARDS = 4
 MAX_OTHER_CHARACTERS = 8
 CARD_MAX_CHARS = 180
@@ -69,6 +74,7 @@ class WorldState:
             "initial_situation": "",
             "location": {"name": "", "description": ""},
             "time": "",
+            "promises": [],             # 玩家与角色之间的约定，编号与期限由代码管理
             "characters": {},           # 角色名 -> {description, attitude_toward_player, location, status, affinity}
             "inventory": [],            # [{"name", "quantity", "description"}]
             "plot_flags": {},           # 关键剧情节点 {"flag": true/"string"}
@@ -166,6 +172,8 @@ class WorldState:
         d["event_log"] = []
         d["last_combat"] = None
         d["pity"] = {}
+        d["promises"] = []
+        d["meta"].pop("next_promise_id", None)
         self.touch()
 
     # ---- 持久化 ----
@@ -255,6 +263,7 @@ class WorldState:
             lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{'、'.join(gf_names) if gf_names else '无'}")
 
         lines.extend(character_context_lines(d, player_input, last_narrative))
+        lines.extend(promise_summary_lines(d))
 
         inv = d.get("inventory") or []
         if inv:
@@ -408,6 +417,8 @@ class WorldState:
         else:
             lines.append("- 已知角色：无")
 
+        lines.extend(promise_summary_lines(d, player_visible=True))
+
         inv = d.get("inventory") or []
         if inv:
             item_str, omitted = _summary_items(inv)
@@ -470,6 +481,96 @@ def _characters_for_summary(chars, location_name, limit):
     return (here + rest)[:limit]
 
 
+def promise_overdue_days(data, promise):
+    due = promise.get("due_days")
+    if not isinstance(due, int) or isinstance(due, bool):
+        return 0
+    day = safe_int((data.get("calendar") or {}).get("days"), 0)
+    return max(0, day - safe_int(promise.get("made_day"), day) - due)
+
+
+def open_promises(data):
+    return sorted([p for p in data.get("promises", []) if isinstance(p, dict) and p.get("status") == "open"],
+                  key=lambda p: (-promise_overdue_days(data,p), safe_int(p.get("made_turn"), 0)))
+
+
+def promise_label(promise):
+    giver = "你" if promise.get("from") == "玩家" else str(promise.get("from") or "")
+    receiver = "你" if promise.get("to") == "玩家" else str(promise.get("to") or "")
+    return giver + "答应" + receiver + "：" + str(promise.get("content") or "")
+
+
+def promise_summary_lines(data, player_visible=False):
+    promises = open_promises(data)
+    if not promises:
+        return []
+    lines = ["- 未了约定："]
+    for p in promises:
+        overdue = promise_overdue_days(data, p)
+        if player_visible:
+            lines.append("  · " + promise_label(p) + ("（已逾期）" if overdue else ""))
+        else:
+            timing = f"第 {p['made_turn']} 回定下，已过 {max(0, safe_int((data.get('calendar') or {}).get('days'), 0)-p['made_day'])} 天"
+            if overdue:
+                timing += f"，已逾期 {overdue} 天"
+            elif p.get("due_days"):
+                timing += f"，约定期限 {p['due_days']} 天"
+            lines.append(f"  · [{p['id']}] {promise_label(p)}（{timing}）")
+    return lines
+
+
+def _apply_promises(state, update, turn):
+    data = state.data
+    promises = data.setdefault("promises", [])
+    deltas = {}
+    changes = update.get("promises_update")
+    for event in changes if isinstance(changes, list) else []:
+        if not isinstance(event, dict) or event.get("status") not in ("kept", "broken"):
+            continue
+        promise = next((p for p in promises if p.get("id") == event.get("id") and p.get("status") == "open"), None)
+        if not promise:
+            continue
+        promise.update(status=event["status"], closed_turn=turn)
+        if promise["from"] == "玩家":
+            target = promise["to"]
+            deltas[target] = deltas.get(target, 0) + RELATION_EVENTS["守约" if event["status"] == "kept" else "失约"]
+    additions = update.get("promises_add")
+    full_noted = False
+    for event in additions if isinstance(additions, list) else []:
+        if not isinstance(event, dict):
+            continue
+        giver, receiver, content = event.get("from"), event.get("to"), event.get("content")
+        if not isinstance(giver, str) or not isinstance(receiver, str) or (giver == "玩家") == (receiver == "玩家"):
+            continue
+        other = receiver if giver == "玩家" else giver
+        if other not in data["characters"] or not isinstance(content, str) or not content.strip():
+            continue
+        due = event.get("due_days")
+        if due is not None and (not isinstance(due, int) or isinstance(due, bool) or not 1 <= due <= MAX_PROMISE_DAYS):
+            continue
+        content = content.strip()[:PROMISE_CONTENT_CHARS]
+        if any(p.get("status") == "open" and {p.get("from"),p.get("to")} == {giver,receiver}
+               and p.get("content") == content for p in promises):
+            continue
+        if sum(p.get("status") == "open" for p in promises) >= MAX_OPEN_PROMISES:
+            if not full_noted:
+                state.add_event("未了约定已满，本轮新增约定未记录")
+                full_noted = True
+            continue
+        used = [int(p["id"][1:]) for p in promises if isinstance(p.get("id"), str) and p["id"].startswith("p") and p["id"][1:].isdigit()]
+        serial = max([safe_int(data["meta"].get("next_promise_id"), 1)] + [n+1 for n in used])
+        data["meta"]["next_promise_id"] = serial + 1
+        promise = {"id": f"p{serial}", "from": giver, "to": receiver, "content": content,
+                   "made_turn": turn, "made_day": safe_int((data.get("calendar") or {}).get("days"),0),
+                   "status": "open", "closed_turn": None}
+        if due is not None:
+            promise["due_days"] = due
+        promises.append(promise)
+    closed = sorted([p for p in promises if p.get("status") != "open"], key=lambda p: safe_int(p.get("closed_turn"),0))
+    data["promises"] = [p for p in promises if p.get("status") == "open"] + closed[-MAX_CLOSED_PROMISES:]
+    return deltas
+
+
 def character_mentioned(name, info, text):
     aliases = info.get("aliases") if isinstance(info.get("aliases"), list) else []
     return any(n and n in str(text or "") for n in [name] + aliases if isinstance(n, str))
@@ -503,7 +604,9 @@ def character_card(name, info, data):
     day = safe_int((data.get("calendar") or {}).get("days"), 0)
     for p in promises:
         age = max(0, day - safe_int(p.get("made_day"), day))
-        pending.append(str(p.get("content", "")) + f"（第{p.get('made_turn', 0)}回，已过{age}天）")
+        overdue = promise_overdue_days(data,p)
+        timing = f"，已逾期{overdue}天" if overdue else ""
+        pending.append(str(p.get("content", "")) + f"（第{p.get('made_turn', 0)}回，已过{age}天{timing}）")
     entries = [
         ("身份", "- ", name + "（" + str(profile.get("identity") or info.get("description") or "") + "）"),
         ("态度", "  对你：", str(info.get("attitude_toward_player") or "未知") + "｜在" + str(info.get("location") or "未知")),
@@ -896,6 +999,8 @@ def apply_update(state, update, power_cap=None):
             delta = max(-cap, min(cap, power - current))
             anchor["player_power"] = _clean_number(max(current + delta, 0.001))
 
+    promise_deltas = _apply_promises(state, update, turn + 1)
+
     # 关系事件：好感度动态增减（相识时长另由 time_bonus 派生）
     # P1-10：同一对象单轮只取绝对值最大的一条事件，单轮好感变化钳制在 ±RELATION_MAX_DELTA。
     best_events = {}
@@ -909,13 +1014,15 @@ def apply_update(state, update, power_cap=None):
         current = best_events.get(subject)
         if current is None or abs(RELATION_EVENTS[event]) > abs(RELATION_EVENTS[current]):
             best_events[subject] = event
-    for subject, event in best_events.items():
+    for subject in dict.fromkeys(list(best_events) + list(promise_deltas)):
+        event = best_events.get(subject)
         c = d["characters"].get(subject)
         if not isinstance(c, dict):
             c = d["characters"][subject] = {}
         _ensure_affinity(c, turn)
         before = safe_int(c.get("affinity"), 0)
-        delta = max(-RELATION_MAX_DELTA, min(RELATION_MAX_DELTA, RELATION_EVENTS[event]))
+        combined = RELATION_EVENTS.get(event, 0) + promise_deltas.get(subject, 0)
+        delta = max(-RELATION_MAX_DELTA, min(RELATION_MAX_DELTA, combined))
         c["affinity"] = clamp(before + delta, 0, 100)
         c["interactions"] = safe_int(c.get("interactions"), 0) + 1
         d["characters"][subject] = d["characters"].pop(subject)

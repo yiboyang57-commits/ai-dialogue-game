@@ -83,6 +83,16 @@ class ChatUITests(unittest.TestCase):
             app.run()
         self.assertFalse(any("历史库有 2 回合未写入" in c.value for c in app.caption))
 
+    @patch('config.list_save_slots', return_value=[])
+    def test_world_panel_shows_pending_promises(self, _slots):
+        app, game = self.make_app()
+        game.state.data["characters"] = {"甲": {"description":"药师"}}
+        world_state.apply_update(game.state, {"promises_add":[{"from":"甲", "to":"玩家", "content":"送来药材", "due_days":1}]})
+        game.state.data["calendar"]["days"] = 3
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any('class="bullet"' in m.value and '送来药材' in m.value and '已逾期' in m.value for m in app.markdown))
+
     def messages(self, app):
         return [m.value for m in app.markdown if m.value.startswith('<div class="message">')]
 

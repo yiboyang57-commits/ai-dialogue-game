@@ -16,7 +16,7 @@ from config import (PROSE_LEVELS, DEFAULT_PROSE, BASE_URL, SaveCorruptError, loa
 from game import Game
 from llm_client import LLMClient, LLMError
 from memory import Memory
-from world_state import WorldState
+from world_state import WorldState, open_promises, promise_label, promise_overdue_days
 import character_builder
 import dynamics
 import save_bundle
@@ -641,6 +641,9 @@ def render_world_panel(game):
     bullets = []
     if goal:
         bullets.append(f'<div class="goal"><small>当前目标</small>{esc(goal)}</div>')
+    for promise in open_promises(d):
+        label = promise_label(promise) + ("（已逾期）" if promise_overdue_days(d, promise) else "")
+        bullets.append(f'<div class="bullet">{esc(label)}</div>')
     for k, v in flags.items():
         bullets.append(f'<div class="bullet"><b>{esc(k)}</b>：{esc(flag_text(v))}</div>')
     if bullets:

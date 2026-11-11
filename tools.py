@@ -87,6 +87,16 @@ UPDATE_TOOL = {
                         "new": {"type": "string", "maxLength": 60},
                         "reason": {"type": "string", "minLength": 8}},
                         "required": ["subject", "field", "new", "reason"]}},
+                "promises_add": {"type": "array", "description": "本轮已达成的约定，一方必须是玩家、另一方是已知角色；不得提前声明尚未判定的承诺。",
+                    "items": {"type": "object", "properties": {
+                        "from": {"type": "string"}, "to": {"type": "string"},
+                        "content": {"type": "string", "maxLength": 60},
+                        "due_days": {"type": "integer", "minimum": 1, "maximum": 3600}},
+                        "required": ["from", "to", "content"]}},
+                "promises_update": {"type": "array", "description": "根据已发生的事了结约定。逾期本身不等于失约。",
+                    "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "status": {"type": "string", "enum": ["kept", "broken"]}},
+                        "required": ["id", "status"]}},
                 "inventory_add": {
                     "type": "array",
                     "description": "本次行动实际新获得的数量增量。不能重复列出已有初始物品、背包现有数量，或尚未发生的战利品。",

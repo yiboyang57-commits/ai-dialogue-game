@@ -463,6 +463,11 @@ class SaveDB:
             eid = self._entity_id("plot", key, turn_id)
             self._set_facts(eid, turn_id, turn_no, {"值": value})
 
+        for promise in state.get("promises", []):
+            if isinstance(promise, dict) and promise.get("id"):
+                eid = self._entity_id("promise", promise["id"], turn_id)
+                self._set_facts(eid, turn_id, turn_no, {"内容": promise.get("content"), "状态": promise.get("status")})
+
     def _sync_aliases(self, state):
         """声明别名先到先得；自动称呼冲突时撤销，避免后来同姓角色被认错。"""
         rows = self.conn.execute("SELECT id, kind, name FROM entities ORDER BY id").fetchall()
@@ -509,6 +514,8 @@ class SaveDB:
         for kind, old, new in (
                 ("character", (before or {}).get("characters") or {}, after.get("characters") or {}),
                 ("plot", (before or {}).get("plot_flags") or {}, after.get("plot_flags") or {}),
+                ("promise", {p["id"]:p for p in (before or {}).get("promises", []) if isinstance(p,dict) and p.get("id")},
+                 {p["id"]:p for p in after.get("promises", []) if isinstance(p,dict) and p.get("id")}),
                 ("item", {i["name"]: i for i in (before or {}).get("inventory", []) if isinstance(i, dict) and i.get("name")},
                  {i["name"]: i for i in after.get("inventory", []) if isinstance(i, dict) and i.get("name")})):
             for name in old.keys() - new.keys():

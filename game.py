@@ -69,7 +69,7 @@ def merge_updates(a, b):
             merged = dict(out.get(k) or {})
             merged.update(v or {})
             out[k] = merged
-        elif k in ("inventory_add", "inventory_remove", "relationship_events", "attribute_events", "character_development"):
+        elif k in ("inventory_add", "inventory_remove", "relationship_events", "attribute_events", "character_development", "promises_add", "promises_update"):
             out[k] = list(out.get(k) or []) + list(v or [])
         elif k == "options":
             out[k] = v  # 必须以最终结果之后的行动选项为准
@@ -161,6 +161,10 @@ class Game:
         # P1-11：场景模式里睡一夜/赶几天路也会真的过日子，计入日历与年龄（模型最多声明 9 天）
         if not block_days and isinstance(update, dict) and update.get("days_passed") is not None:
             self._advance_calendar(max(0, min(9, safe_int(update["days_passed"], 0) or 0)))
+        # 本轮新约定按结算后的日历起算，避免睡一夜等普通回合把期限提前一天。
+        for promise in self.state.data.get("promises", []):
+            if promise.get("made_turn") == self.state.data["meta"]["turn"] + 1:
+                promise["made_day"] = safe_int((self.state.data.get("calendar") or {}).get("days"), 0)
         if already_dead or self.state.is_dead:
             self.state.mark_dead(cause or update.get("turn_event") or "生命耗尽")
         self.state.bump_turn()

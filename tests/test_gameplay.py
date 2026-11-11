@@ -1978,6 +1978,68 @@ class CharacterProfileTests(GameFixture):
         self.assertEqual(len(game.state.data["characters"]["甲"]["profile"]["sample_lines"]), 2)
         self.assertNotIn("profile_pending", game.state.data["characters"]["路人"])
 
+    def test_promises_validation_deadlines_and_relationship_cap(self):
+        st = world_state.WorldState()
+        st.data["meta"]["turn"] = 22
+        st.data["calendar"]["days"] = 47
+        st.data["characters"] = {"甲": {"affinity": 80}}
+        add = {"id": "恶意编号", "from": "玩家", "to": "甲", "content": "送药", "due_days": 3}
+        world_state.apply_update(st, {"promises_add": [add, add, dict(add, to="未知"), dict(add, **{"from": "乙"}), dict(add, due_days=True)]})
+        self.assertEqual(len(st.data["promises"]), 1)
+        promise = st.data["promises"][0]
+        self.assertEqual((promise["id"], promise["made_turn"], promise["made_day"]), ("p1",23,47))
+        st.data["calendar"]["days"] = 50
+        self.assertNotIn("已逾期", st.to_summary())
+        st.data["calendar"]["days"] = 52
+        self.assertIn("已逾期 2 天", st.to_summary())
+        self.assertIn("已逾期", st.to_player_summary())
+        self.assertNotIn("p1", st.to_player_summary())
+        self.assertEqual(promise["status"], "open")
+        world_state.apply_update(st, {"promises_update": [{"id":"p1", "status":"broken"}],
+                                      "relationship_events":[{"subject":"甲", "event":"背弃"}]})
+        self.assertEqual(st.data["characters"]["甲"]["affinity"], 50)
+        world_state.apply_update(st, {"promises_update": [{"id":"p1", "status":"broken"}]})
+        self.assertEqual(st.data["characters"]["甲"]["affinity"], 50)
+        world_state.apply_update(st, {"promises_add": [dict(add, **{"from":"甲", "to":"玩家"})]})
+        world_state.apply_update(st, {"promises_update": [{"id":"p2", "status":"broken"}]})
+        self.assertEqual(st.data["characters"]["甲"]["affinity"], 50)
+        world_state.apply_update(st, {"promises_add": [add]})
+        world_state.apply_update(st, {"promises_update": [{"id":"p3", "status":"kept"}]})
+        self.assertEqual(st.data["characters"]["甲"]["affinity"], 58)
+
+    def test_promise_limits_history_and_ids(self):
+        st = world_state.WorldState()
+        world_state.apply_update(st, {"characters":{"甲":{"description":"路人"}},
+                                     "promises_add":[{"from":"玩家", "to":"甲", "content":str(i)} for i in range(25)]})
+        self.assertEqual(len(st.data["promises"]), 20)
+        self.assertTrue(any("未了约定已满" in e for e in st.data["event_log"]))
+        world_state.apply_update(st, {"promises_update":[{"id":p["id"], "status":"kept"} for p in st.data["promises"]]})
+        for i in range(5):
+            world_state.apply_update(st, {"promises_add":[{"from":"甲", "to":"玩家", "content":"新约定"}]})
+            pid = next(p["id"] for p in st.data["promises"] if p["status"] == "open")
+            world_state.apply_update(st, {"promises_update":[{"id":pid, "status":"kept"}]})
+        self.assertEqual(len(st.data["promises"]), 20)
+        self.assertEqual(st.data["meta"]["next_promise_id"], 26)
+
+    def test_promise_drafts_do_not_apply_and_settled_promises_promote(self):
+        add = {"from":"甲", "to":"玩家", "content":"送药"}
+        game = self.game(Replies(("请求", {"judgment":{"type":"persuasion"}, "promises_add":[add]}), ("拒绝。", {})))
+        game.state.data["characters"] = {"甲": {"description":"路人"}}
+        game.run_turn("请求甲送药")
+        self.assertEqual(game.state.data["promises"], [])
+        game.llm = Replies(("答应明天送来。", {"promises_add":[add], "days_passed":1}))
+        game.run_turn("第二天再问")
+        self.assertEqual(game.state.data["promises"][0]["made_day"], 1)
+        self.assertEqual(game.state.data["characters"]["甲"]["profile_pending"], "build")
+        with storage.SaveDB(str(Path(self.tmp.name, "promises.db"))) as db:
+            db.record_turn(2, "action", "约定", state=game.state.data)
+            before = copy.deepcopy(game.state.data)
+            world_state.apply_update(game.state, {"promises_update":[{"id":"p1", "status":"kept"}]})
+            db.record_turn(3, "action", "兑现", state=game.state.data, state_before=before)
+            facts = db.entity_profile("p1", "promise")["facts"]
+            self.assertTrue(any(f["value"] == "open" and f["valid_to_turn"] is not None for f in facts))
+            self.assertTrue(any(f["value"] == "kept" and f["valid_to_turn"] is None for f in facts))
+
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics
         st = world_state.WorldState()
