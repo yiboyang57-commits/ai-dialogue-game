@@ -1837,6 +1837,20 @@ class StorageSQLiteTests(unittest.TestCase):
 
 
 
+class ProfileReplies(Replies):
+    def __init__(self, *replies, profiles=None):
+        super().__init__(*replies)
+        self.profiles = list(profiles or [])
+        self.profile_calls = []
+
+    def call_tool(self, messages, tool):
+        self.profile_calls.append(copy.deepcopy(messages))
+        reply = self.profiles.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return "", "build_character_profile", copy.deepcopy(reply)
+
+
 class CharacterProfileTests(GameFixture):
     def test_profile_freeze_development_and_old_save(self):
         st = world_state.WorldState()
@@ -1908,6 +1922,61 @@ class CharacterProfileTests(GameFixture):
         summary = st.to_summary()
         for word in ("猎户", "受伤", "答应给我药"):
             self.assertIn(word, summary)
+
+    def test_profile_promotion_and_distinct_reference_and_sqlite(self):
+        profile = {"personality": "重承诺", "speech": "简短直接", "cares": "家人", "bottom_line": "不骗人", "sample_lines": ["请进。", "药放这里。"]}
+        llm = ProfileReplies(*[("甲来了。", {})]*3, profiles=[profile])
+        game = self.game(llm)
+        game.state.data["characters"] = {"甲": {"description": "猎户"}, "乙": {"profile": dict(profile, speech="爱开玩笑")}}
+        with patch.object(config, "SAVE_DIR", self.tmp.name), patch.dict(os.environ, {"WANJIE_STORAGE": "sqlite"}):
+            game.run_turn("找甲")
+            game.run_turn("找甲")
+            self.assertEqual(llm.profile_calls, [])
+            game.run_turn("找甲")
+            self.assertEqual(len(llm.profile_calls), 1)
+            self.assertIn("爱开玩笑", str(llm.profile_calls[0]))
+            self.assertEqual(game.state.data["characters"]["甲"]["profile"]["locked_turn"], 3)
+            with storage.SaveDB(config.db_path_for("")) as db:
+                self.assertEqual(db.load_state(), world_state.WorldState.load().data)
+                self.assertTrue(any(f["attribute"] == "说话方式" for f in db.entity_profile("甲")["facts"]))
+
+    def test_profile_queue_retry_limit_and_postcommit_failure(self):
+        llm = ProfileReplies(*[("甲乙丙都在。", {})]*4, profiles=[{"personality": "谨慎"}, RuntimeError("模拟失败"), {}])
+        game = self.game(llm)
+        game.state.data["characters"] = {n: {"appearances": 3 if n == "甲" else 1, "profile_pending": "build"} for n in "甲乙丙"}
+        with patch.object(config, "SAVE_DIR", self.tmp.name):
+            for attempt in range(1,4):
+                game.run_turn("找甲")
+                self.assertEqual(game.state.data["characters"]["甲"]["profile_attempts"], attempt)
+                self.assertEqual(world_state.WorldState.load().data["meta"]["turn"], attempt)
+                self.assertEqual(len(llm.profile_calls), attempt)
+            self.assertNotIn("profile_pending", game.state.data["characters"]["甲"])
+            self.assertIn("profile_pending", game.state.data["characters"]["乙"])
+            game.llm = Replies(("甲来了。", {}))
+            game.run_turn("甲")
+            self.assertNotIn("profile_pending", game.state.data["characters"]["甲"])
+
+    def test_template_character_promotes_only_on_appearance(self):
+        profile = {"personality": "谨慎", "speech": "直说", "sample_lines": ["请进。", "坐吧。"]}
+        game = self.game(ProfileReplies(("门外无人。", {}), ("老王来了。", {}), profiles=[profile]))
+        game.state.apply_template({"characters": {"老王": {"description": "猎户"}, "老李": {"description": "掌柜"}}})
+        game.run_turn("看看门外")
+        self.assertEqual(len(game.llm.profile_calls), 0)
+        game.run_turn("继续等")
+        self.assertEqual(len(game.llm.profile_calls), 1)
+        self.assertIn("profile", game.state.data["characters"]["老王"])
+        self.assertNotIn("profile", game.state.data["characters"]["老李"])
+
+    def test_profile_refresh_changes_only_lines_and_limit_twenty(self):
+        profile = {"personality": "谨慎", "speech": "直说", "sample_lines": [], "locked_turn": 1, "revisions": []}
+        game = self.game(ProfileReplies(("甲来了。", {}), profiles=[dict(profile, speech="乱说", sample_lines=["请进。", "坐吧。"])]))
+        game.state.data["characters"] = {str(i): {"profile": dict(profile)} for i in range(20)}
+        game.state.data["characters"]["甲"] = {"profile": dict(profile), "profile_pending": "refresh_lines"}
+        game.state.data["characters"]["路人"] = {"appearances": 9}
+        game.run_turn("甲")
+        self.assertEqual(game.state.data["characters"]["甲"]["profile"]["speech"], "直说")
+        self.assertEqual(len(game.state.data["characters"]["甲"]["profile"]["sample_lines"]), 2)
+        self.assertNotIn("profile_pending", game.state.data["characters"]["路人"])
 
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics

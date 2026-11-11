@@ -138,6 +138,9 @@ class WorldState:
                 if isinstance(info, dict):
                     char = {k: v for k, v in info.items() if isinstance(v, str)}  # 保留模板里的额外文字字段
                     char.update(_sanitize_character(info, trusted=True))
+                for field in ("profile", "profile_pending", "profile_attempts", "appearances", "locked_turn", "revisions"):
+                    char.pop(field, None)
+                char["template_character"] = True
                 _ensure_affinity(char, 0)
                 d["characters"][name.strip()] = char
         d["inventory"] = template.get("inventory") or []

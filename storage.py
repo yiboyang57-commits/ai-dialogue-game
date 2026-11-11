@@ -449,6 +449,10 @@ class SaveDB:
                 wanted["所在"] = info["location"]
             if info.get("status"):
                 wanted["状态"] = info["status"]
+            profile = info.get("profile") if isinstance(info.get("profile"), dict) else {}
+            for key, label in (("personality", "性格"), ("speech", "说话方式"), ("cares", "在意"), ("bottom_line", "底线")):
+                if profile.get(key):
+                    wanted[label] = profile[key]
             self._set_facts(eid, turn_id, turn_no, wanted)
         for item in (state.get("inventory") or []):
             if not isinstance(item, dict) or not item.get("name"):
