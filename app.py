@@ -11,7 +11,7 @@ import re
 
 import streamlit as st
 
-from config import (BASE_URL, SaveCorruptError, load_api_key, save_api_key, load_model,
+from config import (PROSE_LEVELS, DEFAULT_PROSE, BASE_URL, SaveCorruptError, load_api_key, save_api_key, load_model,
                     list_save_slots, prune_temp_slots, KEEP_RECENT_ENTRIES)
 from game import Game
 from llm_client import LLMClient, LLMError
@@ -1290,12 +1290,13 @@ if "game" not in st.session_state or st.session_state.game is None:
                     role = st.text_input("你扮演的角色")
                     init = st.text_area("初始情境", height=70)
                     style = st.text_input("主持风格（可留空）")
+                    prose = st.segmented_control("文风", PROSE_LEVELS, default=DEFAULT_PROSE, key="manual_prose")
                     if st.button("开始游戏", type="primary", use_container_width=True):
                         if not bg and not init:
                             st.warning("至少填写世界观/背景或初始情境。")
                         else:
                             start_build({
-                                "world": {"name": "", "background": bg, "rules": "", "style": style},
+                                "world": {"name": "", "background": bg, "rules": "", "style": style, "prose": prose or DEFAULT_PROSE},
                                 "player": {"name": "", "role_description": role, "attributes": {}, "status_effects": []},
                                 "initial_situation": init,
                                 "location": {"name": "", "description": ""}, "time": "",
@@ -1306,6 +1307,7 @@ if "game" not in st.session_state or st.session_state.game is None:
                     theme = st.text_input("主题 / 类型（可留空）", placeholder="修仙 / 赛博朋克 / 悬疑…")
                     keywords = st.text_input("关键词 / 要求（可留空）")
                     role_hint = st.text_input("想扮演的角色类型（可留空）")
+                    prose = st.segmented_control("文风", PROSE_LEVELS, default=DEFAULT_PROSE, key="generated_prose")
                     if st.button("生成世界观", use_container_width=True):
                         with st.spinner("正在生成…"):
                             try:
@@ -1314,6 +1316,7 @@ if "game" not in st.session_state or st.session_state.game is None:
                                 st.error(str(e))
                                 t = None
                         if t:
+                            t.setdefault("world", {})["prose"] = prose or DEFAULT_PROSE
                             st.session_state.preview = t
 
                 else:  # 上传文件

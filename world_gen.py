@@ -1,3 +1,4 @@
+from config import PROSE_LEVELS, DEFAULT_PROSE
 """世界观设定：AI 自定义生成 + 文件上传，统一归一化为“世界观模板”。
 
 模板结构（与 world_state 中的状态字段一一对应）：
@@ -336,7 +337,7 @@ def normalize_template(data):
     known = {"world", "player", "initial_situation", "opening", "location", "time", "characters",
              "inventory", "plot_flags", "current_goal", "combat", "talents", "role", "background"}
     custom = {k: v for k, v in data.items() if k not in known}
-    world_extra = {k: v for k, v in w.items() if k not in ("name", "background", "rules", "style")}
+    world_extra = {k: v for k, v in w.items() if k not in ("name", "background", "rules", "style", "prose")}
     if world_extra:
         custom["world_extra"] = world_extra
 
@@ -346,6 +347,7 @@ def normalize_template(data):
             "background": w.get("background", "") or data.get("background", "") or "",
             "rules": w.get("rules", "") or "",
             "style": w.get("style", "") or "",
+            "prose": w.get("prose") if w.get("prose") in PROSE_LEVELS else DEFAULT_PROSE,
         },
         "player": {
             "name": p.get("name", "") or "",

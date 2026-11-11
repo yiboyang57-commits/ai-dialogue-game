@@ -1836,5 +1836,42 @@ class StorageSQLiteTests(unittest.TestCase):
         self.assertNotIn("【相关往事", plain)
 
 
+
+class CharacterProfileTests(GameFixture):
+    def test_prose_modes_and_metrics(self):
+        import style_metrics as metrics
+        st = world_state.WorldState()
+        default = prompts.build_system_prompt(st, [])
+        self.assertIn("【语言——朴素直白】", default)
+        self.assertIn("掌柜摇头", default)
+        self.assertIn("巷子里太安静", default)
+        self.assertIn("你怎么才来", default)
+        st.data["world"].pop("prose")
+        self.assertEqual(default, prompts.build_system_prompt(st, []))
+        st.data["world"]["prose"] = "文学"
+        literary = prompts.build_system_prompt(st, [])
+        self.assertNotIn("【语言——朴素直白】", literary)
+        self.assertIn("底线：涉及性的角色一律是成年人；不出现未成年人的性内容。", literary)
+        st.data["world"]["prose"] = "标准"
+        standard = prompts.build_system_prompt(st, [])
+        self.assertIn("不替人物解释内心", standard)
+        self.assertNotIn("对照例子", standard)
+        self.assertGreater(metrics.cliche_rate("她眸光微动，嘴角勾起一抹笑。"), 0)
+        self.assertEqual(metrics.cliche_rate("你怎么才来？"), 0)
+        self.assertEqual(metrics.avg_sentence_len("你好。再见！"), 2)
+        self.assertEqual(metrics.dialogue_tag_rate('她眸光微动：「你好。」'), 1)
+        self.assertEqual(metrics.dialogue_tag_rate('「她似乎走了。」'), 0)
+        self.assertEqual(metrics.report([])["dialogue_tag_rate"], 0)
+
+    def test_style_report_readonly_database_and_history_fallback(self):
+        from scripts.style_report import read_narratives
+        path = Path(self.tmp.name, "history.json")
+        path.write_text(json.dumps({"recent": [{"role": "assistant", "content": "你好"}]}))
+        self.assertEqual(read_narratives(save_dir=self.tmp.name), ["你好"])
+        with storage.SaveDB(str(Path(self.tmp.name, "game.db"))) as db:
+            db.record_turn(1, "action", "数据库叙事")
+        self.assertEqual(read_narratives(save_dir=self.tmp.name), ["数据库叙事"])
+
+
 if __name__ == "__main__":
     unittest.main()

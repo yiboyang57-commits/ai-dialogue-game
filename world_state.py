@@ -8,6 +8,7 @@ import os
 import time
 
 import seasons
+from config import PROSE_LEVELS, DEFAULT_PROSE
 from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic, read_json_save
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
 from judgment import death_protection_limits, ITEM_MODIFIERS, ATTRIBUTE_FACTOR_LINKS
@@ -37,7 +38,7 @@ class WorldState:
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         return {
             "meta": {"turn": 0, "created_at": now, "updated_at": now},
-            "world": {"name": "", "background": "", "rules": "", "style": ""},
+            "world": {"name": "", "background": "", "rules": "", "style": "", "prose": DEFAULT_PROSE},
             "player": {
                 "name": "",
                 "role_description": "",
@@ -82,6 +83,7 @@ class WorldState:
         d["world"]["background"] = w.get("background", "") or ""
         d["world"]["rules"] = w.get("rules", "") or ""
         d["world"]["style"] = w.get("style", "") or ""
+        d["world"]["prose"] = w.get("prose") if w.get("prose") in PROSE_LEVELS else DEFAULT_PROSE
 
         p = template.get("player") or {}
         d["player"]["name"] = p.get("name", "") or ""

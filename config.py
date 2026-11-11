@@ -183,3 +183,7 @@ def load_model():
         except (json.JSONDecodeError, OSError):
             pass
     return DEFAULT_MODEL
+
+# 文风档位：旧存档缺省使用朴素白话。
+PROSE_LEVELS = ("朴素", "标准", "文学")
+DEFAULT_PROSE = "朴素"
