@@ -13,6 +13,10 @@ from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic,
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
 from judgment import death_protection_limits, ITEM_MODIFIERS, ATTRIBUTE_FACTOR_LINKS
 
+MAX_CARDS = 4
+MAX_OTHER_CHARACTERS = 8
+CARD_MAX_CHARS = 180
+
 PROFILE_LIMITS = {"identity": 40, "personality": 60, "speech": 60, "cares": 40,
                   "bottom_line": 40, "goal": 40, "mood": 12}
 TRAIT_MAX_CHARS = 20
@@ -215,7 +219,7 @@ class WorldState:
             del log[: len(log) - MAX_EVENT_LOG]
 
     # ---- 生成“当前状态摘要” ----
-    def to_summary(self):
+    def to_summary(self, player_input="", last_narrative=""):
         """把结构化状态压缩成一段给模型看的文本摘要。
 
         每轮发给模型的不是全部历史，而是这份从 JSON 实时生成的摘要。
@@ -247,33 +251,7 @@ class WorldState:
         if physique.get("name") or gf_names:
             lines.append(f"  体质：{physique.get('name') or '无'}；金手指：{'、'.join(gf_names) if gf_names else '无'}")
 
-        chars = d.get("characters") or {}
-        turn = d.get("meta", {}).get("turn", 0)
-        if chars:
-            lines.append(f"- 已知角色（共 {len(chars)} 位）：")
-            for name, info in _characters_for_summary(chars, (loc.get("name") or ""), 12):
-                bits = []
-                if info.get("attitude_toward_player"):
-                    bits.append(f"态度={info['attitude_toward_player']}")
-                if isinstance(info.get("affinity"), (int, float)):
-                    bits.append(f"好感度={effective_affinity(info, turn)}")
-                if info.get("location"):
-                    bits.append(f"位置={info['location']}")
-                if info.get("status"):
-                    bits.append(f"状态={info['status']}")
-                line = f"  · {name}"
-                if info.get("description"):
-                    line += f"：{info['description']}"
-                if bits:
-                    line += "（" + "，".join(bits) + "）"
-                lines.append(line)
-                memories = [m for m in (info.get("memories") or []) if isinstance(m, str)]
-                if memories:
-                    lines.append("    往事：" + "；".join(memories[-3:]))
-            if len(chars) > 12:
-                lines.append("  …（其余角色略）")
-        else:
-            lines.append("- 已知角色：无")
+        lines.extend(character_context_lines(d, player_input, last_narrative))
 
         inv = d.get("inventory") or []
         if inv:
@@ -487,6 +465,96 @@ def _characters_for_summary(chars, location_name, limit):
             (c["location"] in location_name or location_name in c["location"])]
     rest = [(n, c) for n, c in reversed(items) if (n, c) not in here]
     return (here + rest)[:limit]
+
+
+def character_mentioned(name, info, text):
+    aliases = info.get("aliases") if isinstance(info.get("aliases"), list) else []
+    return any(n and n in str(text or "") for n in [name] + aliases if isinstance(n, str))
+
+
+def _character_brief(name, info, legacy=False):
+    line = "- " + name
+    if info.get("description"):
+        line += "（" + str(info["description"]) + "）"
+    for field, label in (("attitude_toward_player", "对你"), ("location", "在"), ("status", "状态")):
+        if info.get(field):
+            line += "｜" + label + "：" + str(info[field])
+    if info.get("trait"):
+        line += "｜特点：" + str(info["trait"])
+    if legacy:
+        memories = [m for m in info.get("memories", []) if isinstance(m, str)]
+        if memories:
+            line += "\n  往事：" + "；".join(memories[-3:])
+    return line
+
+
+def character_card(name, info, data):
+    """完整卡片有严格预算；先舍弃往事、在意、目标，再压缩其余值，保留说话和例句标签。"""
+    profile = info.get("profile")
+    if not isinstance(profile, dict):
+        return _character_brief(name, info, legacy=True)
+    samples = [s for s in profile.get("sample_lines", []) if isinstance(s, str)]
+    promises = [p for p in data.get("promises", []) if isinstance(p, dict)
+                and p.get("status") == "open" and name in (p.get("from"), p.get("to"))]
+    pending = []
+    day = safe_int((data.get("calendar") or {}).get("days"), 0)
+    for p in promises:
+        age = max(0, day - safe_int(p.get("made_day"), day))
+        pending.append(str(p.get("content", "")) + f"（第{p.get('made_turn', 0)}回，已过{age}天）")
+    entries = [
+        ("身份", "- ", name + "（" + str(profile.get("identity") or info.get("description") or "") + "）"),
+        ("态度", "  对你：", str(info.get("attitude_toward_player") or "未知") + "｜在" + str(info.get("location") or "未知")),
+        ("性格", "  性格：", str(profile.get("personality") or "")),
+        ("底线", "  底线：", str(profile.get("bottom_line") or "")),
+        ("说话", "  说话：", str(profile.get("speech") or "")),
+        ("例句", "  例句：", " ".join("「"+x+"」" for x in samples) or "（待补充）"),
+        ("在意", "  在意：", str(profile.get("cares") or "")),
+        ("目标", "  目标：", str(profile.get("goal") or "")),
+        ("情绪", "  情绪：", str(profile.get("mood") or "")),
+        ("未了", "  未了：", "；".join(pending)),
+        ("往事", "  往事：", "；".join(m for m in info.get("memories", [])[-3:] if isinstance(m, str))),
+    ]
+    entries = [list(e) for e in entries if e[2]]
+    def render():
+        return "\n".join(label + value for _, label, value in entries)
+    for optional in ("往事", "在意", "目标"):
+        if len(render()) <= CARD_MAX_CHARS:
+            break
+        entries = [e for e in entries if e[0] != optional]
+    while len(render()) > CARD_MAX_CHARS:
+        entry = max(entries, key=lambda e: len(e[2]))
+        excess = len(render()) - CARD_MAX_CHARS
+        size = max(1, len(entry[2]) - max(1, min(excess, len(entry[2]) // 3)))
+        entry[2] = entry[2][:max(0, size - 1)] + "…"
+    return render()
+
+
+def character_context_lines(data, player_input="", last_narrative=""):
+    chars = [(n, c) for n, c in (data.get("characters") or {}).items() if isinstance(c, dict)]
+    if not chars:
+        return ["- 已知角色：无"]
+    location = (data.get("location") or {}).get("name")
+    selected = []
+    for predicate in (
+            lambda n,c: bool(location and c.get("location") and (location in c["location"] or c["location"] in location)),
+            lambda n,c: character_mentioned(n,c,player_input),
+            lambda n,c: character_mentioned(n,c,last_narrative)):
+        for n,c in chars:
+            if n not in selected and predicate(n,c) and len(selected) < MAX_CARDS:
+                selected.append(n)
+    mapping = dict(chars)
+    lines = [f"- 已知角色（共 {len(chars)} 位）：", "【相关人物】"]
+    for n in selected:
+        lines.append(character_card(n, mapping[n], data))
+    remaining = [(n,c) for n,c in reversed(chars) if n not in selected]
+    if remaining:
+        lines.append("【其他人物】")
+        legacy = not any(isinstance(c.get("profile"), dict) for _,c in chars)
+        for n,c in remaining[:MAX_OTHER_CHARACTERS]:
+            lines.append(_character_brief(n,c,legacy=legacy))
+        if len(remaining) > MAX_OTHER_CHARACTERS:
+            lines.append("  …（其余角色略）")
+    return lines
 
 
 SUMMARY_FLAG_LIMIT = 20   # 摘要里最多列出的剧情标记数

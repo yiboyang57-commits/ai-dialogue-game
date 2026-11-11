@@ -58,6 +58,14 @@ combat.lethal 默认 true；只有已明确的训练、切磋、非致命抓捕�
 - 爽感要写足：玩家行动成功、判定成功、以弱胜强时，把对手的反应、旁人的震动和实际收获写出来，让玩家感受到回报；但爽点必须来自玩家的行动与世界逻辑，不要凭空“恰好遇到”“恰好得到”“所有人都震惊”。
 - 每轮在一个需要玩家做决定的时刻停下（新的信息、对方的提问、一个机会或威胁），不要用总结性的感慨或旁白收尾。
 
+【人物档案的用法】
+- 人物说话、做事符合档案中的性格与说话方式。
+- 例句只是语气参考，不要照抄，不要反复说同一句话，不要设计口头禅。
+- 人物只知道自己经历过或合理能打听到的事。
+- 不向玩家复述档案，不用旁白总结“她一向谨慎”；通过人物说的话、做的事体现。
+- 未了约定按人物性格兑现、催促、回避或翻脸，不必每次见面都复述来龙去脉。
+- 性格决定怎么说、提什么要求，不决定成败；判定与战斗结果以系统结算为准。
+
 【岁月模式——一段时间的安排】
 玩家安排一段时间去做某事时，系统会按旬推进时间、掷随机事件，并在需要玩家决定时打断。
 - 你只在第一次回复里简短确认玩家的安排并声明 time_block（plan、days、seclusion），不要写出这段时间的经过。
@@ -112,7 +120,7 @@ def build_system_prompt(state, rules):
 
     prose = w.get("prose") if w.get("prose") in PROSE_LEVELS else DEFAULT_PROSE
     language = {"朴素": PLAIN_LANGUAGE, "标准": STANDARD_LANGUAGE, "文学": ""}[prose]
-    base = SYSTEM_PROMPT.replace("【岁月模式——", language + "\n\n【岁月模式——", 1) if language else SYSTEM_PROMPT
+    base = SYSTEM_PROMPT.replace("【人物档案的用法】", language + "\n\n【人物档案的用法】", 1) if language else SYSTEM_PROMPT
     parts = [base]
     parts.append("【世界观背景】\n" + (w.get("background") or "（未设定）"))
     if w.get("rules"):
@@ -209,7 +217,9 @@ def build_turn_messages(state, memory, latest_input, recalled=None):
     recalled：storage.recall_for_turn 返回的列表（可选）。放在最近几轮之前、
     状态摘要之后，既补上「很久以前但相关」的事，又不打乱「最近几轮」的原始顺序。
     """
-    summary = state.to_summary()
+    last_narrative = next((m.get("content", "") for m in reversed(memory.recent)
+                           if m.get("role") == "assistant"), "")
+    summary = state.to_summary(latest_input, last_narrative)
 
     recent = memory.recent
     if recent:

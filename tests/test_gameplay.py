@@ -1876,6 +1876,39 @@ class CharacterProfileTests(GameFixture):
         self.assertEqual(game.state.data["characters"]["甲"]["appearances"], 1)
         self.assertNotIn("appearances", game.state.data["characters"]["乙"])
 
+    def test_character_cards_budget_selection_and_privacy(self):
+        st = world_state.WorldState()
+        st.data["location"]["name"] = "丹堂"
+        for i in range(6):
+            st.data["characters"][f"角色{i}"] = {"location": "丹堂", "profile": {
+                "identity": "身份"*20, "personality": "谨慎"*30, "speech": "说话简短"*15,
+                "bottom_line": "不欺骗"*10, "cares": "病人"*20, "goal": "找药"*20,
+                "sample_lines": ["先等一下。"*5, "药放这里。"*5]}, "memories": ["很久以前的事"*10]}
+        summary = st.to_summary()
+        self.assertEqual(summary.count("说话："), 4)
+        self.assertEqual(summary.count("例句："), 4)
+        self.assertIn("角色4", summary.split("【其他人物】")[1])
+        for name, info in st.data["characters"].items():
+            self.assertLessEqual(len(world_state.character_card(name, info, st.data)), 180)
+        st.data["location"]["name"] = "坊市"
+        st.data["characters"]["角色5"]["aliases"] = ["师姐"]
+        summary = st.to_summary("问师姐", "角色4刚来过")
+        relevant = summary.split("【其他人物】")[0]
+        self.assertIn("角色5", relevant)
+        self.assertIn("角色4", relevant)
+        visible = st.to_player_summary()
+        self.assertNotIn("说话简短", visible)
+        self.assertNotIn("先等一下", visible)
+        mem = memory.Memory(recent=[{"role": "assistant", "content": "角色4刚来过"}])
+        self.assertIn("角色5", prompts.build_turn_messages(st, mem, "问师姐")[0]["content"])
+
+    def test_old_character_summary_keeps_description_status_and_memories(self):
+        st = world_state.WorldState()
+        st.data["characters"] = {"甲": {"description": "猎户", "status": "受伤", "memories": ["答应给我药"]}}
+        summary = st.to_summary()
+        for word in ("猎户", "受伤", "答应给我药"):
+            self.assertIn(word, summary)
+
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics
         st = world_state.WorldState()
