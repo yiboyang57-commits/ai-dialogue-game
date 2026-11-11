@@ -9,7 +9,7 @@
 
 ### v2.25 当前约定（2026-11-11）
 
-- 全量基线 **178 项**；任务书 `角色档案_任务书.md`，真实评测状态见 `docs/style_eval.md`、`docs/voice_eval.md`。自动测试不调用真实 API。
+- 全量基线 **178 项**；已完成任务书归档在 `archive/`（状态见 `任务书状态.md`），执行参考 `archive/角色档案_任务书.md`，真实评测状态见 `docs/style_eval.md`、`docs/voice_eval.md`。自动测试不调用真实 API。
 - `world.prose` 默认朴素；`config.PROSE_LEVELS` 三档。`prompts` 动态拼接语言节，世界风格不能覆盖朴素档的表达要求。
 - 角色 `trait` 首次写入后冻结，`appearances` 由 `_commit` 按文本/状态变化计数。普通工具不能直写完整 `profile`、计数或修订，只能更新已有档案的 `goal/mood`。
 - `character_development` 是冻结后的修改入口；理由至少 8 字、默认冷却 30 回合，一人同轮最多一条；清空例句、排队只刷新例句。常量在 `world_state.py`。
