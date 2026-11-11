@@ -1838,6 +1838,44 @@ class StorageSQLiteTests(unittest.TestCase):
 
 
 class CharacterProfileTests(GameFixture):
+    def test_profile_freeze_development_and_old_save(self):
+        st = world_state.WorldState()
+        st.data["characters"]["甲"] = {"trait": "谨慎", "profile": {
+            "personality": "重承诺", "speech": "简短", "locked_turn": 0,
+            "sample_lines": ["请进。", "稍等。"], "revisions": []}}
+        world_state.apply_update(st, {"characters": {"甲": {"trait": "油滑", "appearances": 999,
+            "profile": {"personality": "反复"}, "personality": "反复", "goal": "还钱", "mood": "着急"}}})
+        char = st.data["characters"]["甲"]
+        self.assertEqual(char["trait"], "谨慎")
+        self.assertEqual(char["profile"]["personality"], "重承诺")
+        self.assertEqual(char["profile"]["goal"], "还钱")
+        self.assertNotIn("appearances", char)
+        event = {"subject": "甲", "field": "personality", "new": "开始怀疑宗门", "reason": "弟弟病逝后，他不再相信宗门"}
+        world_state.apply_update(st, {"character_development": [event]})
+        self.assertEqual(char["profile"]["revisions"], [])
+        st.data["meta"]["turn"] = 30
+        world_state.apply_update(st, {"character_development": [dict(event, reason=""), event, dict(event, new="另一个性格")]})
+        self.assertEqual(char["profile"]["personality"], "开始怀疑宗门")
+        self.assertEqual(char["profile"]["revisions"][0]["old"], "重承诺")
+        self.assertEqual(char["profile"]["revisions"][0]["turn"], 31)
+        self.assertEqual(char["profile_pending"], "refresh_lines")
+        self.assertEqual(char["profile"]["sample_lines"], [])
+        st.data["meta"]["turn"] = 32
+        world_state.apply_update(st, {"character_development": [dict(event, new="另一个性格")]})
+        self.assertEqual(len(char["profile"]["revisions"]), 1)
+        with patch.object(world_state, "PROFILE_LOCK", False):
+            world_state.apply_update(st, {"character_development": [dict(event, new="另一个性格")]})
+        self.assertEqual(len(char["profile"]["revisions"]), 2)
+
+    def test_appearances_count_once_and_preserve_old_characters(self):
+        game = self.game(Replies(("甲回应了阿甲。", {"characters": {"甲": {"status": "安好", "appearances": 999}}})))
+        game.state.data["characters"] = {"甲": {"description": "路人", "aliases": ["阿甲"]}, "乙": {"description": "路人"}}
+        game.state.save()
+        game.state = world_state.WorldState.load()
+        game.run_turn("找阿甲")
+        self.assertEqual(game.state.data["characters"]["甲"]["appearances"], 1)
+        self.assertNotIn("appearances", game.state.data["characters"]["乙"])
+
     def test_prose_modes_and_metrics(self):
         import style_metrics as metrics
         st = world_state.WorldState()

@@ -51,7 +51,7 @@ def merge_updates(a, b):
             merged = dict(out.get(k) or {})
             merged.update(v or {})
             out[k] = merged
-        elif k in ("inventory_add", "inventory_remove", "relationship_events", "attribute_events"):
+        elif k in ("inventory_add", "inventory_remove", "relationship_events", "attribute_events", "character_development"):
             out[k] = list(out.get(k) or []) + list(v or [])
         elif k == "options":
             out[k] = v  # 必须以最终结果之后的行动选项为准
@@ -146,6 +146,7 @@ class Game:
         if already_dead or self.state.is_dead:
             self.state.mark_dead(cause or update.get("turn_event") or "生命耗尽")
         self.state.bump_turn()
+        self._count_character_appearances(player_input, text, update)
         if add_user:
             self.memory.add_user(player_input)
         self.memory.add_assistant(text)
@@ -153,6 +154,18 @@ class Game:
             self._maybe_compress()
         self.save()
         self._record_turn(player_input, text, update, block_days)
+
+    def _count_character_appearances(self, player_input, text, update):
+        """只按本轮已提交文本和角色更新计数，每人每回合最多一次。"""
+        source = str(player_input or "") + "\n" + str(text or "")
+        changes = update.get("characters") if isinstance(update, dict) else {}
+        changes = changes if isinstance(changes, dict) else {}
+        for name, char in self.state.data.get("characters", {}).items():
+            if not isinstance(char, dict):
+                continue
+            aliases = char.get("aliases") if isinstance(char.get("aliases"), list) else []
+            if name in changes or any(n and n in source for n in [name] + aliases if isinstance(n, str)):
+                char["appearances"] = max(0, safe_int(char.get("appearances"), 0)) + 1
 
     def _record_turn(self, player_input, text, update, block_days):
         """SQLite 审计层双写（路线图阶段 1）：默认关闭，任何异常都不得影响游戏。"""

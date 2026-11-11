@@ -58,12 +58,16 @@ UPDATE_TOOL = {
                     "description": (
                         "发生变化的角色，键为角色名。可包含 description / attitude_toward_player(文字，如“友善”) / "
                         "location / status / memory（值得记住的往事，一句话）等字段，缺失字段保持原值。"
+                        "性格、说话方式由系统生成，不能在这里修改；goal/mood 只更新已有档案。"
                         "好感度只能通过 relationship_events 记录事件、由系统换算；"
                         "affinity / met_turn 等数值是系统字段，写在这里会被忽略。"
                     ),
                     "additionalProperties": {
                         "type": "object",
                         "properties": {
+                            "trait": {"type": "string", "maxLength": 20, "description": "首次登场的一句话特点；已有值后冻结。"},
+                            "goal": {"type": "string", "maxLength": 40},
+                            "mood": {"type": "string", "maxLength": 12},
                             "description": {"type": "string"},
                             "attitude_toward_player": {"type": "string"},
                             "location": {"type": "string"},
@@ -75,6 +79,14 @@ UPDATE_TOOL = {
                         },
                     },
                 },
+                "character_development": {
+                    "type": "array", "description": "重大经历引起的人物转变，必须给已有剧情依据，受系统冷却约束。",
+                    "items": {"type": "object", "properties": {
+                        "subject": {"type": "string"},
+                        "field": {"type": "string", "enum": ["personality", "speech", "cares", "bottom_line"]},
+                        "new": {"type": "string", "maxLength": 60},
+                        "reason": {"type": "string", "minLength": 8}},
+                        "required": ["subject", "field", "new", "reason"]}},
                 "inventory_add": {
                     "type": "array",
                     "description": "本次行动实际新获得的数量增量。不能重复列出已有初始物品、背包现有数量，或尚未发生的战利品。",

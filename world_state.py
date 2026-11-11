@@ -13,6 +13,19 @@ from config import SAVE_DIR, MAX_EVENT_LOG, save_slot_suffix, write_json_atomic,
 from dynamics import RELATION_EVENTS, ATTRIBUTE_EVENTS, effective_affinity, clamp, initial_affinity
 from judgment import death_protection_limits, ITEM_MODIFIERS, ATTRIBUTE_FACTOR_LINKS
 
+PROFILE_LIMITS = {"identity": 40, "personality": 60, "speech": 60, "cares": 40,
+                  "bottom_line": 40, "goal": 40, "mood": 12}
+TRAIT_MAX_CHARS = 20
+SAMPLE_LINE_MAX_CHARS = 30
+MAX_SAMPLE_LINES = 3
+MIN_SAMPLE_LINES = 2
+PROFILE_LOCK = True
+CHARACTER_DEV_COOLDOWN = 30
+MAX_PROFILE_REVISIONS = 5
+DEVELOPMENT_FIELDS = ("personality", "speech", "cares", "bottom_line")
+DEVELOPMENT_REASON_MIN = 8
+DEVELOPMENT_REASON_MAX = 160
+
 ATTRIBUTE_MAX_DELTA = 20
 ATTRIBUTE_FACTOR_CEILING = 200
 ATTRIBUTE_FREE_CEILING = 10000
@@ -498,6 +511,53 @@ def _summary_items(inventory):
     return text, len(valid) - len(shown)
 
 
+def clean_profile(raw):
+    """专用档案调用的清洗入口；普通状态更新绝不经过此入口写档案。"""
+    if not isinstance(raw, dict):
+        return {}
+    out = {key: raw[key].strip()[:limit] for key, limit in PROFILE_LIMITS.items()
+           if isinstance(raw.get(key), str) and raw[key].strip()}
+    if isinstance(raw.get("sample_lines"), list):
+        out["sample_lines"] = list(dict.fromkeys(line.strip()[:SAMPLE_LINE_MAX_CHARS]
+            for line in raw["sample_lines"] if isinstance(line, str) and line.strip()))[:MAX_SAMPLE_LINES]
+    return out
+
+
+def _apply_character_development(data, events, turn):
+    if not isinstance(events, list):
+        return
+    changed = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        name, field = event.get("subject"), event.get("field")
+        if not isinstance(name, str) or name in changed or field not in DEVELOPMENT_FIELDS:
+            continue
+        char = data["characters"].get(name)
+        profile = char.get("profile") if isinstance(char, dict) else None
+        reason, new = event.get("reason"), event.get("new")
+        if not isinstance(profile, dict) or not isinstance(reason, str) or len(reason.strip()) < DEVELOPMENT_REASON_MIN:
+            continue
+        if not isinstance(new, str) or not new.strip():
+            continue
+        revisions = profile.get("revisions") or []
+        last = max([safe_int(r.get("turn"), 0) for r in revisions if isinstance(r, dict)]
+                   + [safe_int(profile.get("locked_turn"), 0)])
+        if turn - last < (CHARACTER_DEV_COOLDOWN if PROFILE_LOCK else 0):
+            continue
+        new = new.strip()[:PROFILE_LIMITS[field]]
+        if new == profile.get(field):
+            continue
+        revisions.append({"turn": turn, "field": field, "old": profile.get(field, ""),
+                          "new": new, "reason": reason.strip()[:DEVELOPMENT_REASON_MAX]})
+        profile[field] = new
+        profile["revisions"] = revisions[-MAX_PROFILE_REVISIONS:]
+        profile["sample_lines"] = []
+        char["profile_pending"] = "refresh_lines"
+        char["profile_attempts"] = 0
+        changed.add(name)
+
+
 def _sanitize_character(info, trusted=False):
     """清理角色字段类型：态度应为文字、好感度为数字，防止模型把数值误塞进态度等。
 
@@ -508,6 +568,9 @@ def _sanitize_character(info, trusted=False):
     if not isinstance(info, dict):
         return {}
     out = {}
+    for field, limit in (("trait", TRAIT_MAX_CHARS), ("goal", PROFILE_LIMITS["goal"]), ("mood", PROFILE_LIMITS["mood"])):
+        if isinstance(info.get(field), str):
+            out[field] = info[field].strip()[:limit]
     if isinstance(info.get("description"), str):
         out["description"] = info["description"]
     if isinstance(info.get("attitude_toward_player"), str):
@@ -673,6 +736,14 @@ def apply_update(state, update, power_cap=None):
             if not clean and not (isinstance(memory, str) and memory.strip()):
                 continue
             existing = d["characters"].get(name)
+            if isinstance(existing, dict) and existing.get("trait"):
+                clean.pop("trait", None)
+            profile = existing.get("profile") if isinstance(existing, dict) else None
+            for field in ("goal", "mood"):
+                if field in clean:
+                    value = clean.pop(field)
+                    if isinstance(profile, dict):
+                        profile[field] = value
             if isinstance(existing, dict) and existing:
                 existing.update(clean)
                 target = existing
@@ -681,6 +752,8 @@ def apply_update(state, update, power_cap=None):
             _ensure_affinity(target, turn)
             _add_memory(target, memory)
             d["characters"][name] = d["characters"].pop(name)  # 最近互动的角色排到最后，摘要优先展示
+
+    _apply_character_development(d, update.get("character_development"), turn + 1)
 
     # 背包：新增按名字累加数量
     for raw in update.get("inventory_add") or []:
