@@ -1,60 +1,83 @@
-# AI 对话模拟器 · Game Master 原型（DeepSeek）
+# 万界 Wanjie · AI 文字冒险
 
-一个命令行文字冒险游戏：你设定世界观与角色，模型扮演主持人（Game Master）推进剧情。
-本原型重点演示「结构化状态管理 + tool calling 更新 + 历史压缩 + 本地持久化」，
-**不依赖把全部历史对话堆给模型来维持一致性**。
+**你设定世界，扮演主角，决定下一步。AI 担任主持人，接着讲你的故事。**
 
-> 文档状态总表（哪些任务书已完成、哪些还在进行）见 [`任务书状态.md`](任务书状态.md)。
+[简体中文](README.md) · [English](README_EN.md)
+
+万界是一款由 **DeepSeek** 驱动的文字冒险游戏，在本地浏览器中游玩。你可以自建世界、结识角色、探索与战斗，也可以安排一段时间修炼或生活。世界状态、人物往事与约定会随存档保存，供后续剧情使用。
+
+*A DeepSeek-powered text adventure with custom worlds, persistent character profiles, and code-resolved combat. Currently designed for Chinese-language play.*
+
+## 可以怎么玩？
+
+- **从自己的设定开局**：让 AI 生成世界，上传 JSON / TXT / Markdown 设定，或手动填写；再挑选主角的天赋、体质与特殊能力。
+- **用文字决定行动**：自由输入，也可以点击当前情境下的行动选项。探索、交谈、说服、战斗都能推动故事。
+- **让重要人物留下档案**：记录性格、说话方式、目标、情绪，以及与你共同经历的事；约定可以被兑现，也可以被打破。
+- **选择喜欢的表达**：朴素、标准、文学三档，默认朴素；人物说话时会参考自己的档案。
+- **让时间往前走**：通过「岁月模式」安排修炼或生活，由程序推进时间、处理插曲与打断。
+- **保存不同的人生**：网页版支持多个存档，以及 JSON 存档导入、导出。
+
+**AI 负责讲述，程序负责掷骰和结算。** 战斗胜负、行动判定、伤害和生死由代码处理，模型根据结果继续叙事。结构化状态与摘要帮助故事衔接；可选的 SQLite 记忆层还能检索历史往事。
 
 ## 快速开始
 
-**最简单：双击启动器（点开就能玩）**
+需要 **Python 3.10+**、网络连接和你自己的 **DeepSeek API Key**。模型调用由 DeepSeek 计费；游戏界面和主要提示词目前为中文。推荐使用功能最完整的 **网页版**。
 
-- macOS：双击 **`启动游戏.command`**（首次会装环境，之后自动启动并打开浏览器）
-- Windows：双击 **`启动游戏.bat`**
+### 1. 下载项目
 
-**命令行版**：
-
-```bash
-cd /path/to/dsh-test
-python3 main.py
-```
-
-**精致 Web 界面版**（Streamlit，三区布局 + 聊天气泡 + 卡片化状态面板）：
+在 GitHub 点击 **Code → Download ZIP** 并解压，或使用 Git：
 
 ```bash
-pip install -r requirements.txt   # 仅需 streamlit
-streamlit run app.py
+git clone https://github.com/yiboyang57-commits/ai-dialogue-game.git
+cd ai-dialogue-game
 ```
 
-**图形界面版**（tkinter，零额外依赖）：
+### 2. 启动游戏
+
+安装 Python 后，可以双击项目中的启动器：
+
+- **macOS**：`启动游戏.command`
+- **Windows**：`启动游戏.bat`
+
+启动器会在首次运行时创建环境、安装依赖并打开浏览器。也可以手动启动：
+
+**macOS / Linux**
 
 ```bash
-python3 gui.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m streamlit run app.py
 ```
 
-首次运行会引导输入 DeepSeek API Key（保存在 `config.json`）；
-也可用环境变量提供：
+**Windows（PowerShell）**
 
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-python3 main.py   # 或 python3 gui.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-> 核心游戏逻辑仅用 Python 标准库（`urllib` 直连 `api.deepseek.com` 的 OpenAI 兼容接口）；仅 Web 界面额外需要 `streamlit`。
+### 3. 填入 Key，开始新游戏
 
-开始新游戏前，可选择世界观来源：
+首次打开后按提示输入 DeepSeek API Key，再选择世界观、创建主角。Key 保存在本地 `config.json`；也支持环境变量 `DEEPSEEK_API_KEY`。存档保存在本地 `save/` 中；游玩时会把剧情所需的上下文发送给 DeepSeek。
 
-| 选项 | 说明 |
-|------|------|
-| `1` | **AI 自定义生成世界观**：输入主题/关键词/想扮演的角色，由 AI 通过 `setup_world` 工具生成结构化世界观，可预览、重新生成 |
-| `2` | **上传自己的世界观文件**：JSON 直接解析；`.txt/.md` 文本交给 AI 整理成结构化设定 |
-| `3` | 手动逐项输入 |
+`config.json` 和 `save/` 已被 Git 忽略，分享项目或反馈问题时不要附上自己的 Key。
 
-选定世界观后，还会进入 **主角构建** 步骤，可自选 **天赋**（0~3 个）、**体质**（单选）与
-**金手指**（是否自带外挂，单选），详见下方「主角构建」章节。
+## 当前进展与反馈
 
-游戏内命令：
+当前版本 **v2.25**，仍在持续开发。角色档案和文风控制已经实现，实际的对话自然度与人物区分度仍待真实模型评测；记忆也可能漏掉细节。完整英文游戏界面尚未提供，英文 README 是项目介绍与启动指南。
+
+欢迎在 [Issues](https://github.com/yiboyang57-commits/ai-dialogue-game/issues) 分享体验：哪段对话太绕、哪个角色忘了往事、什么地方不好操作。附上版本、你的输入和相关回复片段，会更容易复现。
+
+[更新记录](更新记录.md) · [开发路线图](完整项目路线图.md) · [任务书状态](任务书状态.md) · [记忆评测](docs/memory_eval.md) · [文风评测](docs/style_eval.md) · [人物盲测](docs/voice_eval.md)
+
+## 其他入口与详细说明
+
+命令行版：`.venv/bin/python main.py`；桌面版：`.venv/bin/python gui.py`（需系统支持 tkinter）。Windows 使用 `.\.venv\Scripts\python.exe` 替换解释器路径。两个入口保留较早的主角构建流程，功能与网页版并不完全一致。
+
+核心游戏逻辑仅使用 Python 标准库；网页版额外依赖 Streamlit。以下为实现细节与各版本功能说明。
+
+**命令行版游戏内命令：**
 
 | 命令 | 说明 |
 |------|------|
@@ -64,7 +87,7 @@ python3 main.py   # 或 python3 gui.py
 | `/quit`  | 保存并退出 |
 | `/help`  | 帮助 |
 
-## 架构设计（对应你的核心技术要求）
+## 架构设计
 
 ### 1. 结构化状态管理 —— `world_state.py`
 世界状态保存在 `save/state.json`，包含：世界背景、玩家（属性/状态效果）、当前地点、
@@ -79,7 +102,7 @@ python3 main.py   # 或 python3 gui.py
 2. 通过 **function calling** 显式调用 `update_world_state(...)` 工具，返回结构化状态增量。
 
 `apply_update` 用「增量合并」策略把增量写回 JSON（只改模型明确给出的字段，其余保留）。
-如果模型偶尔忘记调用工具，会自动重试一次；仍失败则兜底记录一条事件。
+如果模型偶尔忘记调用工具，会自动重试一次；仍失败则报错并回滚本轮，可重新尝试。
 
 ### 3. 历史压缩 —— `memory.py` + `game.compress()`
 - `recent` 只保留最近 3 轮完整对话（`KEEP_RECENT_ENTRIES = 6` 条）。
